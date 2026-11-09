@@ -100,3 +100,7 @@ This is prompt guidance, not automatic detection of internal reasoning or an aut
 
 
 Compaction in the same running session preserves the current planning approval and local checklist for the immediate continuation. A fresh interactive/RPC user input still starts a new planning stage, even if compaction occurred. Compaction does not grant approval where none existed. Approval is held in process memory; restarting/reloading the extension is not covered by this preservation.
+
+## Consultation progress
+
+`ask_advisor` emits local tool-progress updates through OMP's update callback: after brief validation, every five seconds while awaiting completion, and on completion/failure/cancellation. Waiting time includes provider authentication, network latency, and model processing; the extension cannot distinguish those phases or report a completion percentage. Updates contain elapsed time and status only, never briefs, credentials, or partial model output. This works with configured endpoints and OMP-backed advisors without enabling provider token streaming. Display depends on the OMP client's tool-progress rendering. Test with `node test-advisor-progress.ts`.
