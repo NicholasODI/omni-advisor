@@ -36,7 +36,7 @@
 
 import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
-import { assertAbstract, planningText } from "./planning.ts";
+import { assertAbstract, planningText, validateBrief, PrivacyError } from "./planning.ts";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
@@ -51,6 +51,7 @@ import {
   type GatewayUsageReport,
 } from "./gateway.ts";
 import { dispatchIsolatedAdvisor, splitSelector, type ProviderConfig } from "./advisorDispatch.ts";
+import { SessionMetrics } from "./sessionMetrics.ts";
 import { PlanningGate, enforcedPlanningPrompt } from "./planningGate.ts";
 import { dispatchOmpAdvisor } from "./ompAdvisor.ts";
 import { log, logPath } from "./logger.ts";
@@ -234,6 +235,12 @@ const gateOnBySession = loadGates();
 const planningGate = new PlanningGate();
 const planningOverrides = new Map<string, boolean>();
 function planningEnforced(key: string): boolean { return planningOverrides.get(key) ?? config.enforcePlanning === true; }
+const checklists = new Map<string, Array<{ id: string; requirement: string; status: string; evidence?: string }>>();
+const metrics = new Map<string, SessionMetrics>();
+function sessionMetrics(key: string): SessionMetrics {
+  if (!metrics.has(key)) metrics.set(key, new SessionMetrics());
+  return metrics.get(key)!;
+}
 const consultationCounts = new Map<string, number>();
 const pendingConsultations = new Set<string>();
 const lastQuotaBySession = new Map<string, { ts: number; report: GatewayUsageReport }>();
@@ -281,7 +288,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     name: "ask_advisor",
     label: "Ask Cloud Advisor",
     description:
-      "Consult a generalist software architect for initial task planning (rough overview without local files/code), architecture, performance, concurrency, security, and unfamiliar-framework questions. Do NOT use for routine syntax or locally verifiable work—work solo ($0). The query is masked (sensitive values become OMNI_* placeholders), sent to an isolated cloud advisor with no access to your files, tools, or conversation history, and the unmasked advice is returned.",
+      "Consult a generalist software architect for initial task planning (rough overview without local files/code), architecture, performance, concurrency, security, and unfamiliar-framework questions. Do NOT use for routine syntax or locally verifiable work—work solo ($0). The query is masked (sensitive values become OMNI_* placeholders), sent to an isolated cloud advisor with no access to your files, tools, or conversation history, and advice retains placeholders. Call advisor_status for real extension settings; do not infer them from OMP cfg://advisor.",
     parameters: z.object({
       objective: z.string().min(1).max(3000),
       stack: z.string().max(1000).optional(),
@@ -293,7 +300,9 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const key = sessionKey(ctx);
+      const stats = sessionMetrics(key);
       if (key === "unknown" || !isAdvisorEnabled(key)) {
+        stats.blocked++;
         return { content: [{ type: "text", text: "Cloud consultation blocked: enable /omni-advisor on and use an isolated session. Continue locally." }], details: { status: "disabled" } };
       }
       const query = planningText(params);
@@ -304,16 +313,17 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         };
       }
 
-      const limit = config.maxConsultationsPerSession ?? 3;
-      if (!Number.isInteger(limit) || limit < 1 || limit > 100 || pendingConsultations.has(key) || (consultationCounts.get(key) ?? 0) >= limit) {
+      const limit = config.maxConsultationsPerSession;
+      if ((limit !== undefined && (!Number.isInteger(limit) || limit < 1 || (consultationCounts.get(key) ?? 0) >= limit)) || pendingConsultations.has(key)) {
+        stats.blocked++;
         return { content: [{ type: "text", text: "Consultation budget exhausted or another consultation is pending. Continue with the local plan." }], details: { status: "budget" } };
       }
       const planningToken = planningGate.token(key);
       pendingConsultations.add(key);
       try {
-        assertAbstract(query);
+        validateBrief(params);
         const focus = advisorFocus();
-        if (focus) assertAbstract(focus);
+        if (focus) assertAbstract(focus, "advisorFocus");
         ensureConfigTerms(key);
         const masked = cipher.mask(query, key);
         log(
@@ -325,10 +335,13 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         const sel = advisorSelector();
         consultationCounts.set(key, (consultationCounts.get(key) ?? 0) + 1);
         const safeFocus = focus ? cipher.mask(focus, key) : undefined;
+        const dispatchStarted = Date.now();
         const result = advisorSource() === "omp"
           ? await dispatchOmpAdvisor(ctx.modelRegistry, sel, masked, config.advisorTimeoutMs, safeFocus, _signal)
           : await dispatchIsolatedAdvisor(sel, masked, config.advisorTimeoutMs, safeFocus, config.providers, _signal);
 
+        stats.result(result.ok, Date.now() - dispatchStarted, result.usage);
+        log(key, "METRICS", JSON.stringify(stats.snapshot()));
         if (!result.ok) {
           log(key, "ERROR", `advisor dispatch failed: ${result.error}`);
           return {
@@ -352,18 +365,59 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
           details: { advisor: sel },
         };
       } catch (err) {
+        stats.blocked++;
         log(
           key,
           "ERROR",
           "ask_advisor validation or execution failed",
         );
         return {
-          content: [{ type: "text", text: "Consultation blocked: use an abstract brief without code blocks, credentials, URLs, or paths (maximum 12000 characters). Continue locally." }],
+          content: [{ type: "text", text: err instanceof PrivacyError ? err.message : "Consultation blocked by local validation. Check advisor_status and brief fields." }],
           details: {},
         };
       } finally {
         pendingConsultations.delete(key);
       }
+    },
+  });
+
+  pi.registerTool({
+    name: "advisor_checklist",
+    label: "Local Plan Checklist",
+    description: "Local only. Store or inspect a compact requirement-to-evidence checklist. Omit items to read. Before reporting completion reconcile every requirement; self-reported evidence is not independent verification. Never resend this local evidence to the cloud automatically.",
+    parameters: z.object({ items: z.array(z.object({ id: z.string().min(1).max(40), requirement: z.string().min(1).max(500),
+      status: z.enum(["pending", "passed", "failed", "unverified"]), evidence: z.string().max(1000).optional() })).max(50).optional() }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const key = sessionKey(ctx);
+      if (params.items) checklists.set(key, params.items.map(item => ({ ...item, status: item.status === "passed" && !item.evidence?.trim() ? "unverified" : item.status })));
+      const items = checklists.get(key) ?? [];
+      const summary = { items, complete: items.length > 0 && items.every(item => item.status === "passed"), verification: "local-model-reported; check evidence against actual results" };
+      return { content: [{ type: "text", text: JSON.stringify(summary) }], details: summary };
+    },
+  });
+
+  pi.registerTool({
+    name: "advisor_status",
+    label: "Advisor Status (Local)",
+    description: "Read actual omni-advisor settings, planning state, provider configuration readiness, usage, and timing. Local only; no credential values, authentication refresh, or network calls. Configuration presence does not prove connectivity.",
+    parameters: z.object({}),
+    async execute(_id, _params, _signal, _onUpdate, ctx) {
+      const key = sessionKey(ctx);
+      const selector = advisorSelector();
+      const { provider, model } = splitSelector(selector);
+      const explicit = config.providers?.[provider];
+      let readiness = "not configured";
+      if (advisorSource() === "omp") {
+        readiness = ctx.modelRegistry?.find(provider, model) ? "model registered; authentication and connectivity unverified" : "model unavailable";
+      } else if (explicit) {
+        readiness = explicit.apiKeyEnv && !process.env[explicit.apiKeyEnv] ? "required key environment variable missing" : "configuration present; connectivity unverified";
+      } else if (loadProvider(provider)) readiness = "legacy configuration present; connectivity unverified";
+      const status = { enabled: isAdvisorEnabled(key), isolatedSession: key !== "unknown", source: advisorSource(), model: selector,
+        enforcedPlanning: planningEnforced(key), awaitingPlan: planningEnforced(key) && !planningGate.ready(key),
+        pending: pendingConsultations.has(key), maxConsultationsPerSession: config.maxConsultationsPerSession ?? null,
+        attemptedDispatches: consultationCounts.get(key) ?? 0, providerReadiness: readiness,
+        advicePlaceholders: "retained", measurements: sessionMetrics(key).snapshot() };
+      return { content: [{ type: "text", text: JSON.stringify(status) }], details: status };
     },
   });
 
@@ -421,8 +475,12 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
   // ---------------------------------------------------------------------
   pi.on("before_agent_start", async (event, ctx) => {
     const key = sessionKey(ctx);
+    sessionMetrics(key).begin();
     const enforced = planningEnforced(key);
-    if (enforced && event.reason !== "revive") planningGate.begin(key);
+    if (event.reason !== "revive") {
+      checklists.delete(key);
+      if (enforced) planningGate.begin(key);
+    }
     if (!isAdvisorEnabled(key) && !enforced) return;
     return { systemPrompt: [...event.systemPrompt, executorNudge(), ...(enforced ? [enforcedPlanningPrompt] : [])] };
   });
@@ -432,6 +490,16 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     if (planningEnforced(key) && planningGate.blocked(key, event.toolName)) {
       return { block: true, reason: "Execution blocked by enforced planning. Use read/grep/glob/ls/find to gather local facts, then call ask_advisor with an abstract brief. A successful consultation unlocks execution for this prompt. If cloud access or budget is unavailable, report the blocker; the user can use /omni-advisor planning off." };
     }
+    sessionMetrics(key).toolStart(event.toolCallId);
+  });
+  pi.on("tool_result", async (event, ctx) => {
+    if (sessionMetrics(sessionKey(ctx)).toolEnd(event.toolCallId, event.toolName, event.isError)) {
+      return { content: [...event.content, { type: "text", text: "Local recovery hint: three consecutive failures for this tool. Inspect the failure, isolate a minimal reproduction, and change the diagnosis before retrying. Do not automatically consult the cloud." }] };
+    }
+  });
+  pi.on("agent_end", async (_event, ctx) => {
+    const key = sessionKey(ctx); sessionMetrics(key).end();
+    log(key, "METRICS", JSON.stringify(sessionMetrics(key).snapshot()));
   });
 
   // ---------------------------------------------------------------------
@@ -446,11 +514,10 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     const model = msg.provider && msg.model ? `${msg.provider}/${msg.model}` : msg.model || "unknown";
     const usageInput = { input: u.input || 0, output: u.output || 0, cacheRead: u.cacheRead || 0, cacheWrite: u.cacheWrite || 0 };
     usage.recordUsage(key, model, usageInput);
-    const cost = usage.messageCost(usageInput);
     log(
       key,
       "MODEL_USAGE",
-      `${model}: in=${u.input} out=${u.output} cacheR=${u.cacheRead} cacheW=${u.cacheWrite} $${(cost ?? 0).toFixed(4)}`,
+      `${model}: in=${u.input} out=${u.output} cacheR=${u.cacheRead} cacheW=${u.cacheWrite} cost=unknown`,
     );
   });
 
@@ -463,11 +530,13 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     log(
       key,
       "SESSION_END",
-      `session closed: in=${tot.input} out=${tot.output} cacheR=${tot.cacheRead} msgs=${tot.messages} total=$${(tot.costUsd ?? 0).toFixed(4)}`,
+      `session closed: in=${tot.input} out=${tot.output} cacheR=${tot.cacheRead} msgs=${tot.messages} cost=unknown`,
     );
     gateOnBySession.delete(key);
     planningGate.clear(key);
     planningOverrides.delete(key);
+    metrics.delete(key);
+    checklists.delete(key);
   });
 
   // ---------------------------------------------------------------------
@@ -615,20 +684,21 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       const rows = usage.usageSummary(key);
       const sum = usage.usageTotals(key);
       if (sum.messages === 0) {
-        ctx.ui.notify("omni-usage: no usage recorded in this session yet.", "info");
+        ctx.ui.notify(`omni-usage: no token usage recorded. Consultation/timing: ${JSON.stringify(sessionMetrics(key).snapshot())}`, "info");
         return;
       }
       const lines: string[] = [
         `omni-usage (${key}): ${sum.messages} assistant message(s)`,
         `  input=${sum.input}  output=${sum.output}  cacheRead=${sum.cacheRead}  cacheWrite=${sum.cacheWrite}`,
-        `  total=$${(sum.costUsd ?? 0).toFixed(4)} (cost shown only where rate data exists; $0 = rateless/self-hosted)`,
+        `  cost=unknown (no configured rate data)`,
         "",
         "  by model:",
         ...rows.map(
           (r) =>
-            `    ${r.model}: in=${r.input} out=${r.output} cacheR=${r.cacheRead} cacheW=${r.cacheWrite} $${(r.costUsd ?? 0).toFixed(4)}`,
+            `    ${r.model}: in=${r.input} out=${r.output} cacheR=${r.cacheRead} cacheW=${r.cacheWrite} cost=unknown`,
         ),
       ];
+      lines.push("", `  consultations/timing: ${JSON.stringify(sessionMetrics(key).snapshot())}`);
       const cached = lastQuotaBySession.get(key);
       if (cached) {
         const mins = Math.round((Date.now() - cached.ts) / 60000);
