@@ -1,0 +1,1 @@
+{"name":"omni-advisor","version":"1.0.0","private":true,"description":"Local-first coding pipeline with an isolated, text-only cloud advisor for any language/stack: masked queries, lossless unmask, per-session append-only logs, usage accounting","omp":{"extensions":["./index.ts"]}}
