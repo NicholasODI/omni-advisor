@@ -10,7 +10,7 @@ let state: SettingsState = {enabled:false,enforced:false,mode:'local-led',source
 let round=0, saves=0;
 const ui = {
   async select(title:string,options:string[]) {
-    if (title.startsWith('Workflow')) return options[1];
+    if (title.startsWith('Workflow')) return options[2];
     if (title.startsWith('Advisor source')) return options[0];
     if (title.startsWith('OMP advisor')) return options[0];
     return options[[1,3,4,6,7,8][round++]];

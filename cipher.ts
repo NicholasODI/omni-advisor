@@ -26,55 +26,19 @@
 //   - unmask() restores every placeholder back to its original value
 //     (lossless round-trip)
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { log, LOG_DIR, safeSessionId } from "./logger.ts";
 
-/** Per-session sidecar so registered terms survive process restarts:
- *  <LOG_DIR>/<session-key>.cipher.json (raw values, same exposure as the
- *  append-only debug log which already records each scrubbed value). */
+/** Request protection uses in-memory mappings only. Legacy sidecars are never hydrated. */
 function sidecarPath(key: string): string {
   return join(LOG_DIR, safeSessionId(key) + ".cipher.json");
 }
-
 interface SessionCipher {
   key: string;
-  mapping: Map<string, string>; // placeholder -> raw
-  reverse: Map<string, string>; // raw -> placeholder
-  counters: Map<string, number>; // prefix -> next index
-}
-
-function persist(s: SessionCipher): void {
-  if (s.mapping.size === 0) return;
-  try {
-    mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
-    writeFileSync(
-      sidecarPath(s.key),
-      JSON.stringify({ mapping: [...s.mapping.entries()], counters: Object.fromEntries(s.counters) }),
-      { mode: 0o600 },
-    );
-  } catch (e) {
-    log(s.key, "SANITIZE", `cipher persist failed: ${String(e)}`);
-  }
-}
-
-function hydrate(s: SessionCipher): void {
-  const p = sidecarPath(s.key);
-  if (!existsSync(p)) return;
-  try {
-    const data = JSON.parse(readFileSync(p, "utf8")) as {
-      mapping?: Array<[string, string]>;
-      counters?: Record<string, number>;
-    };
-    for (const [ph, raw] of data.mapping ?? []) {
-      s.mapping.set(ph, raw);
-      s.reverse.set(raw, ph);
-    }
-    for (const [prefix, n] of Object.entries(data.counters ?? {})) s.counters.set(prefix, n);
-    if (s.mapping.size > 0) log(s.key, "SANITIZE", `Restored ${s.mapping.size} cipher mapping(s) from sidecar.`);
-  } catch (e) {
-    log(s.key, "ERROR", `cipher sidecar unreadable, starting fresh: ${String(e)}`);
-  }
+  mapping: Map<string, string>;
+  reverse: Map<string, string>;
+  counters: Map<string, number>;
 }
 
 export type TermType =
@@ -182,7 +146,6 @@ function session(key: string): SessionCipher {
   let s = sessions.get(key);
   if (!s) {
     s = { key, mapping: new Map(), reverse: new Map(), counters: new Map() };
-    hydrate(s);
     sessions.set(key, s);
   }
   return s;
@@ -297,7 +260,6 @@ export function mask(text: string, key: string): string {
   for (const span of collectSpans(out, s)) {
     cursor = cursor.slice(0, span.start) + register(s, span.type, span.raw) + cursor.slice(span.end);
   }
-  persist(s);
   return cursor;
 }
 
@@ -339,7 +301,6 @@ export function registerTerms(
     const ph = register(s, type, t.raw);
     if (!added.includes(ph)) added.push(ph);
   }
-  persist(s);
   return added;
 }
 
@@ -356,7 +317,10 @@ export function status(key: string): CipherStatus {
   };
 }
 
-/** Drop one session's mapping (or all when key is omitted); removes the persisted sidecar too. */
+/** Forget local values at session end without touching legacy files. */
+export function forgetSession(key: string): void { sessions.delete(key); }
+
+/** Drop one session's mapping (or all when key is omitted); removes a legacy sidecar too. */
 export function clearSession(key?: string): void {
   if (key === undefined) {
     sessions.clear();

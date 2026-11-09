@@ -4,5 +4,5 @@
   "advisorFocus": "",
   "semanticTerms": {},
   "enforcePlanning": false,
-  "executionMode": "local-led"
+  "executionMode": "balanced"
 }

@@ -42,7 +42,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
 import { saveSettings } from "./settingsStorage.ts";
 import { openSettings, editProvider } from "./settingsMenu.ts";
-import { executionInstructions, type ExecutionMode } from "./executionMode.ts";
+import { executionInstructions, abstractOnlyInstructions, type ExecutionMode } from "./executionMode.ts";
 import { executorNudge, toolResponseFrame } from "./cloudAdvisor.ts";
 import * as cipher from "./cipher.ts";
 import * as usage from "./usageTracker.ts";
@@ -211,7 +211,7 @@ function ensureConfigTerms(key: string): void {
 /** Process-lifetime advisor model override set via /omni-advisor model. */
 let advisorModelOverride: string | undefined;
 const executionModeOverrides = new Map<string, ExecutionMode>();
-function executionMode(key: string): ExecutionMode { return executionModeOverrides.get(key) ?? config.executionMode ?? "local-led"; }
+function executionMode(key: string): ExecutionMode { return executionModeOverrides.get(key) ?? config.executionMode ?? "balanced"; }
 let sourceOverride: "config" | "omp" | undefined;
 function advisorSource(): "config" | "omp" { return sourceOverride ?? config.advisorSource ?? "config"; }
 
@@ -304,8 +304,12 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     name: "ask_advisor",
     label: "Ask Cloud Advisor",
     description:
-      "Consult a generalist software architect for initial task planning (rough overview without local files/code), architecture, performance, concurrency, security, and unfamiliar-framework questions. Do NOT use for routine syntax or locally verifiable work—work solo ($0). The query is masked (sensitive values become OMNI_* placeholders), sent to an isolated cloud advisor with no access to your files, tools, or conversation history, and advice retains placeholders. Call advisor_status for real extension settings; do not infer them from OMP cfg://advisor.",
+      "Consult a generalist software architect for initial task planning (rough overview without local files/code), architecture, performance, concurrency, security, and unfamiliar-framework questions. Do NOT use for routine syntax or locally verifiable work—work solo ($0). Only abstract architecture, constraints, synthetic examples, and summarized outcomes are allowed. Never send source code, records, raw errors, logs, or proprietary business rules. Registered identifiers are masked as a secondary safeguard, sent to an isolated cloud advisor with no access to your files, tools, or conversation history, and advice retains placeholders. Call advisor_status for real extension settings; do not infer them from OMP cfg://advisor.",
     parameters: z.object({
+      purpose: z.enum(["plan", "decision", "checkpoint", "review"]).optional().describe("Consultation type; use review for a final abstract evidence check."),
+      invariants: z.string().max(2000).optional().describe("Abstract correctness/security properties that must remain true."),
+      alternatives: z.string().max(1500).optional().describe("At most two abstract options and tradeoffs, without private implementation details."),
+      outcomes: z.array(z.object({ check: z.string().min(1).max(200), status: z.enum(["passed", "failed", "unverified"]), summary: z.string().min(1).max(500) })).max(8).optional().describe("Summarized outcomes only; never raw test output, records, or logs."),
       objective: z.string().min(1).max(3000),
       stack: z.string().max(1000).optional(),
       components: z.string().max(2000).optional(),
@@ -339,7 +343,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       try {
         validateBrief(params);
         const focus = advisorFocus();
-        if (focus) assertAbstract(focus, "advisorFocus");
+        if (focus) { assertAbstract(focus, "advisorFocus"); if (focus.length > 1000) throw new PrivacyError("advisorFocus", "maximum 1000 characters"); }
         ensureConfigTerms(key);
         const masked = cipher.mask(query, key);
         log(
@@ -351,6 +355,8 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         const sel = advisorSelector();
         consultationCounts.set(key, (consultationCounts.get(key) ?? 0) + 1);
         const safeFocus = focus ? cipher.mask(focus, key) : undefined;
+        assertAbstract(masked, "outbound brief");
+        if (safeFocus) assertAbstract(safeFocus, "outbound focus");
         const dispatchStarted = Date.now();
         const progress = startAdvisorProgress(update => {
           updateAdvisorFooter(ctx.ui, update);
@@ -387,7 +393,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         if (advisorSource() === "config" && !config.providers?.[splitSelector(sel).provider]) void refreshQuota(key);
 
         return {
-          content: [{ type: "text", text: toolResponseFrame(unmasked, executionMode(key)) }],
+          content: [{ type: "text", text: toolResponseFrame(unmasked, executionMode(key), params.purpose ?? "plan") }],
           details: { advisor: sel },
         };
       } catch (err) {
@@ -442,7 +448,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         executionMode: executionMode(key), enforcedPlanning: planningEnforced(key), awaitingPlan: planningEnforced(key) && !planningGate.ready(key),
         pending: pendingConsultations.has(key), maxConsultationsPerSession: config.maxConsultationsPerSession ?? null,
         attemptedDispatches: consultationCounts.get(key) ?? 0, providerReadiness: readiness,
-        advicePlaceholders: "retained", measurements: sessionMetrics(key).snapshot() };
+        advicePlaceholders: "retained", privacyPolicy: "abstract-only (heuristic validation; confidential meaning is not provably detected)", cipherStorage: "memory-only", measurements: sessionMetrics(key).snapshot() };
       return { content: [{ type: "text", text: JSON.stringify(status) }], details: status };
     },
   });
@@ -518,7 +524,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       if (enforced) planningGate.begin(key);
     }
     if (!isAdvisorEnabled(key) && !enforced) return;
-    return { systemPrompt: [...event.systemPrompt, executorNudge(), ...(executionMode(key) === "cloud-led" ? [executionInstructions("cloud-led")] : []), ...(enforced ? [enforcedPlanningPrompt, ...(planningGate.ready(key) ? ["A successful cloud plan is already approved for the current task. Continue local execution from the retained plan/checklist; compaction does not require another consultation."] : [])] : [])] };
+    return { systemPrompt: [...event.systemPrompt, executorNudge(), abstractOnlyInstructions, ...(executionMode(key) !== "local-led" ? [executionInstructions(executionMode(key))] : []), ...(enforced ? [enforcedPlanningPrompt, ...(planningGate.ready(key) ? ["A successful cloud plan is already approved for the current task. Continue local execution from the retained plan/checklist; compaction does not require another consultation."] : [])] : [])] };
   });
 
   pi.on("tool_call", async (event, ctx) => {
@@ -571,6 +577,8 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       `session closed: in=${tot.input} out=${tot.output} cacheR=${tot.cacheRead} msgs=${tot.messages} cost=unknown`,
     );
     try { ctx.ui?.setStatus?.("omni-advisor", undefined); } catch { /* optional UI */ }
+    cipher.forgetSession(key);
+    configTermsEnsuredFor.delete(key);
     gateOnBySession.delete(key);
     planningGate.clear(key);
     planningOverrides.delete(key);
@@ -606,6 +614,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       if (p.includes(" ")) return null;
       const subs = [
         { label: "settings", value: "settings", description: "Open interactive settings" },
+        { label: "mode balanced", value: "mode balanced", description: "Plan, consequential decisions, final abstract review (default)" },
         { label: "mode local-led", value: "mode local-led", description: "Plan then execute locally" },
         { label: "mode cloud-led", value: "mode cloud-led", description: "Cloud selects bounded execution batches" },
         { label: "planning on", value: "planning on", description: "Require abstract cloud planning before execution tools" },
@@ -653,8 +662,8 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         });
         return;
       }
-      if (argNorm === "mode local-led" || argNorm === "mode cloud-led") {
-        executionModeOverrides.set(key, argNorm === "mode cloud-led" ? "cloud-led" : "local-led");
+      if (argNorm === "mode local-led" || argNorm === "mode cloud-led" || argNorm === "mode balanced") {
+        executionModeOverrides.set(key, argNorm === "mode cloud-led" ? "cloud-led" : argNorm === "mode balanced" ? "balanced" : "local-led");
         ctx.ui.notify(`omni-advisor: workflow=${executionMode(key)}`, "info"); return;
       }
       if (argNorm === "planning on" || argNorm === "planning off") {
