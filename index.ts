@@ -51,6 +51,7 @@ import {
   type GatewayUsageReport,
 } from "./gateway.ts";
 import { dispatchIsolatedAdvisor, splitSelector, type ProviderConfig } from "./advisorDispatch.ts";
+import { dispatchOmpAdvisor } from "./ompAdvisor.ts";
 import { log, logPath } from "./logger.ts";
 
 /**
@@ -60,6 +61,7 @@ import { log, logPath } from "./logger.ts";
 interface OmniAdvisorConfig {
   enabledByDefault?: boolean;
   providers?: Record<string, ProviderConfig>;
+  advisorSource?: "config" | "omp";
   maxConsultationsPerSession?: number;
   /** "provider/model" — the provider must be an models.yml block with a baseUrl. */
   advisorModel?: string;
@@ -199,6 +201,8 @@ function ensureConfigTerms(key: string): void {
 
 /** Process-lifetime advisor model override set via /omni-advisor model. */
 let advisorModelOverride: string | undefined;
+let sourceOverride: "config" | "omp" | undefined;
+function advisorSource(): "config" | "omp" { return sourceOverride ?? config.advisorSource ?? "config"; }
 
 /** Per-session advisor-nudge on/off state, persisted to
  *  logs/omni-advisor-gates.json so a session left "on" (or "off") keeps its
@@ -314,7 +318,10 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
 
         const sel = advisorSelector();
         consultationCounts.set(key, (consultationCounts.get(key) ?? 0) + 1);
-        const result = await dispatchIsolatedAdvisor(sel, masked, config.advisorTimeoutMs, focus ? cipher.mask(focus, key) : undefined, config.providers, _signal);
+        const safeFocus = focus ? cipher.mask(focus, key) : undefined;
+        const result = advisorSource() === "omp"
+          ? await dispatchOmpAdvisor(ctx.modelRegistry, sel, masked, config.advisorTimeoutMs, safeFocus, _signal)
+          : await dispatchIsolatedAdvisor(sel, masked, config.advisorTimeoutMs, safeFocus, config.providers, _signal);
 
         if (!result.ok) {
           log(key, "ERROR", `advisor dispatch failed: ${result.error}`);
@@ -331,7 +338,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         const unmasked = result.text!;
 
         // Best-effort: keep the per-session quota display fresh after a cloud call.
-        if (!config.providers?.[splitSelector(sel).provider]) void refreshQuota(key);
+        if (advisorSource() === "config" && !config.providers?.[splitSelector(sel).provider]) void refreshQuota(key);
 
         return {
           content: [{ type: "text", text: toolResponseFrame(unmasked) }],
@@ -470,6 +477,9 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         { label: "on", value: "on", description: "Enable advisor nudge for this session" },
         { label: "off", value: "off", description: "Disable advisor nudge for this session" },
         { label: "status", value: "status", description: "Show gate state + resolved advisor model" },
+        { label: "model omp", value: "model omp", description: "Choose from OMP instance models" },
+        { label: "source omp", value: "source omp", description: "Use OMP model registry and credentials" },
+        { label: "source config", value: "source config", description: "Use configured endpoints" },
         { label: "model", value: "model", description: "Select advisor model (model clear resets)" },
       ];
       const m = subs.filter((s) => s.label.startsWith(p));
@@ -479,6 +489,23 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       const key = sessionKey(ctx);
       const argNorm = (arg || "").trim().toLowerCase();
       const raw = (arg || "").trim();
+      if (argNorm === "source omp" || argNorm === "source config") {
+        sourceOverride = argNorm === "source omp" ? "omp" : "config";
+        ctx.ui.notify(`omni-advisor: source=${advisorSource()}`, "info");
+        return;
+      }
+      if (argNorm === "model omp") {
+        const models = ctx.modelRegistry.getAvailable();
+        if (!models.length) { ctx.ui.notify("omni-advisor: no available OMP models.", "warning"); return; }
+        const labels = [...new Set(models.map((m) => `${m.provider}/${m.id}`))];
+        const selected = await ctx.ui.select("Select OMP advisor model", labels);
+        if (selected && labels.includes(selected)) {
+          advisorModelOverride = selected;
+          sourceOverride = "omp";
+          ctx.ui.notify(`omni-advisor: OMP advisor=${selected}`, "info");
+        }
+        return;
+      }
       if (/^model\b/i.test(raw)) {
         const spec = raw.slice(5).trim();
         if (!spec) {
@@ -521,7 +548,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       const on = isAdvisorEnabled(key);
       const def = config.enabledByDefault === true;
       ctx.ui.notify(
-        `omni-advisor: pipeline ${on ? "enabled" : "disabled"}; default=${def ? "enabled" : "disabled"}; advisor=${advisorSelector()} (isolated dispatch)`,
+        `omni-advisor: pipeline ${on ? "enabled" : "disabled"}; default=${def ? "enabled" : "disabled"}; advisor=${advisorSelector()} source=${advisorSource()} (isolated dispatch)`,
         "info",
       );
     },
