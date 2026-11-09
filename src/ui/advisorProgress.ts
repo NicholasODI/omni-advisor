@@ -1,4 +1,4 @@
-import type { AdvisorPhase } from './advisorStream.ts';
+import type { AdvisorPhase } from '../advisor/advisorStream.ts';
 /** Local status only: never includes briefs, credentials, or partial advice. */
 export interface ProgressUpdate {
   content: Array<{ type: 'text'; text: string }>;

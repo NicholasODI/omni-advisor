@@ -19,12 +19,12 @@
 //  10. Prompt framing and selector splitting behave.
 
 import { existsSync, readFileSync } from "node:fs";
-import * as cipher from "../cipher.ts";
-import * as usage from "../usageTracker.ts";
-import { loadProvider } from "../gateway.ts";
-import { executorNudge, advisorBlock, advisoryFrame, toolResponseFrame } from "../cloudAdvisor.ts";
-import { splitSelector } from "../advisorDispatch.ts";
-import { LOG_DIR, log, logPath, safeSessionId } from "../logger.ts";
+import * as cipher from "../src/privacy/cipher.ts";
+import * as usage from "../src/state/usageTracker.ts";
+import { loadProvider } from "../src/advisor/gateway.ts";
+import { executorNudge, advisorBlock, advisoryFrame, toolResponseFrame } from "../src/advisor/cloudAdvisor.ts";
+import { splitSelector } from "../src/advisor/advisorDispatch.ts";
+import { LOG_DIR, log, logPath, safeSessionId } from "../src/state/logger.ts";
 
 const SID = "omni-masker-smoke";
 

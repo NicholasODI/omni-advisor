@@ -1,7 +1,7 @@
-import type { ExecutionMode } from './executionMode.ts';
+import type { ExecutionMode } from '../workflow/executionMode.ts';
 import type { AdvisorPhase } from './advisorStream.ts';
 import { advisorBlock, advisoryFrame } from './cloudAdvisor.ts';
-import { assertAbstract } from './planning.ts';
+import { assertAbstract } from '../privacy/planning.ts';
 import { splitSelector, type AdvisorDispatchResult } from './advisorDispatch.ts';
 
 /** Structural facade keeps standalone tests independent of the OMP installation. */

@@ -1,4 +1,4 @@
-import type { ExecutionMode } from './executionMode.ts';
+import type { ExecutionMode } from '../workflow/executionMode.ts';
 export interface SettingsState {
   enabled: boolean; enforced: boolean; mode: ExecutionMode; source: 'config' | 'omp';
   model: string; limit?: number; timeout: number;
@@ -65,7 +65,7 @@ export async function openSettings(ui: MenuUI, get: () => SettingsState, actions
   }
 }
 
-export async function editProvider(ui: MenuUI, current: Record<string, import('./advisorDispatch.ts').ProviderConfig>, selected: string) {
+export async function editProvider(ui: MenuUI, current: Record<string, import('../advisor/advisorDispatch.ts').ProviderConfig>, selected: string) {
   const name = await ui.input('Provider alias (not a key)', selected);
   if (name === undefined) return;
   if (!/^[A-Za-z0-9_-]+$/.test(name.trim())) { ui.notify('Use letters, numbers, underscore or dash.', 'error'); return; }

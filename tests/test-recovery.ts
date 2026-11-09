@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { RecoveryGuard } from '../recovery.ts';
+import { RecoveryGuard } from '../src/workflow/recovery.ts';
 import extension from '../index.ts';
 const guard = new RecoveryGuard();
 assert.equal(guard.observe('eval',{},true),false);

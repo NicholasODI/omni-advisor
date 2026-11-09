@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { startAdvisorProgress, updateAdvisorFooter, phaseColors, type ProgressUpdate } from '../advisorProgress.ts';
+import { startAdvisorProgress, updateAdvisorFooter, phaseColors, type ProgressUpdate } from '../src/ui/advisorProgress.ts';
 const updates: ProgressUpdate[] = [];
 let now = 1000;
 const signal = new AbortController();

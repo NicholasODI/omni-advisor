@@ -28,7 +28,7 @@
 
 import { readdirSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { log, LOG_DIR, safeSessionId } from "./logger.ts";
+import { log, LOG_DIR, safeSessionId } from "../state/logger.ts";
 
 /** Request protection uses in-memory mappings only. Legacy sidecars are never hydrated. */
 function sidecarPath(key: string): string {
