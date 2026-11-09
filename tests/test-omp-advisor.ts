@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { dispatchOmpAdvisor } from '../ompAdvisor.ts';
+import { dispatchOmpAdvisor } from '../src/advisor/ompAdvisor.ts';
 const model = { provider: 'instance', id: 'vendor/model' };
 let requests = 0;
 const registry = {

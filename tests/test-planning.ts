@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { dispatchIsolatedAdvisor } from '../advisorDispatch.ts';
-import { assertAbstract } from '../planning.ts';
+import { dispatchIsolatedAdvisor } from '../src/advisor/advisorDispatch.ts';
+import { assertAbstract } from '../src/privacy/planning.ts';
 import extension from '../index.ts';
 let calls = 0;
 let payload: any;

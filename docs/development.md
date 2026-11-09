@@ -2,6 +2,24 @@
 
 [Documentation](README.md) · [Repository overview](../README.md)
 
+## Source layout
+
+```text
+index.ts                 OMP entry point
+omni-advisor.config.json User configuration
+src/
+  extension.ts           Tool, command, and event registration
+  advisor/               Provider adapters, streaming, gateway discovery, prompts
+  privacy/               Abstract-brief validation and identifier masking
+  workflow/              Execution modes, planning gates, recovery
+  ui/                    Settings menu and progress display
+  state/                 Settings persistence, logs, usage, metrics
+tests/                   Regression suites
+docs/                    User and development guides
+```
+
+Load the root `index.ts` in OMP as before. Moving implementation modules does not change the root configuration location or the existing gate/log storage paths.
+
 ## Local checks
 
 Node 24 is recommended; the standalone TypeScript tests require Node >=23.6 with native type stripping. There are no declared package dependencies, lockfile, or build/typecheck scripts. Native execution does not type-check the code.

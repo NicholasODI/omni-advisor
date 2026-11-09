@@ -1,8 +1,8 @@
-import type { ExecutionMode } from './executionMode.ts';
+import type { ExecutionMode } from '../workflow/executionMode.ts';
 import { readAdvisorStream, type AdvisorPhase } from './advisorStream.ts';
 import { advisorBlock, advisoryFrame } from './cloudAdvisor.ts';
 import { loadProvider } from './gateway.ts';
-import { assertAbstract } from './planning.ts';
+import { assertAbstract } from '../privacy/planning.ts';
 export interface ProviderConfig {
   baseUrl: string;
   api: 'openai' | 'anthropic';

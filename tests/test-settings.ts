@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openSettings, editProvider, type SettingsState } from '../settingsMenu.ts';
-import { saveSettings } from '../settingsStorage.ts';
-import { advisorBlock, toolResponseFrame } from '../cloudAdvisor.ts';
-import { executionInstructions } from '../executionMode.ts';
+import { openSettings, editProvider, type SettingsState } from '../src/ui/settingsMenu.ts';
+import { saveSettings } from '../src/state/settingsStorage.ts';
+import { advisorBlock, toolResponseFrame } from '../src/advisor/cloudAdvisor.ts';
+import { executionInstructions } from '../src/workflow/executionMode.ts';
 let state: SettingsState = {enabled:false,enforced:false,mode:'local-led',source:'config',model:'a/b',timeout:120000};
 let round=0, saves=0;
 const ui = {

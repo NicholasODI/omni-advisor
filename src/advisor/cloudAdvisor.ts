@@ -1,5 +1,5 @@
-import type { ConsultationPurpose } from './planning.ts';
-import { batchAdvisorInstructions, type ExecutionMode } from './executionMode.ts';
+import type { ConsultationPurpose } from '../privacy/planning.ts';
+import { batchAdvisorInstructions, type ExecutionMode } from '../workflow/executionMode.ts';
 /** Prompts contain no local context or history. */
 export function executorNudge(): string {
   return `You are the local executor: inspect, implement, and test with local tools. Use ask_advisor for consultations. Follow the selected workflow for nontrivial work; local-led plans once, balanced adds key decision advice and a final abstract review, and cloud-led requests work batches. Routine tools and execution remain local.

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { PlanningGate } from '../planningGate.ts';
+import { PlanningGate } from '../src/workflow/planningGate.ts';
 import extension from '../index.ts';
 const gate = new PlanningGate();
 gate.begin('a');
