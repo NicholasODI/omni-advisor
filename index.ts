@@ -51,6 +51,7 @@ import {
   type GatewayUsageReport,
 } from "./gateway.ts";
 import { dispatchIsolatedAdvisor, splitSelector, type ProviderConfig } from "./advisorDispatch.ts";
+import { startAdvisorProgress } from "./advisorProgress.ts";
 import { SessionMetrics } from "./sessionMetrics.ts";
 import { PlanningGate, enforcedPlanningPrompt } from "./planningGate.ts";
 import { dispatchOmpAdvisor } from "./ompAdvisor.ts";
@@ -339,9 +340,16 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         consultationCounts.set(key, (consultationCounts.get(key) ?? 0) + 1);
         const safeFocus = focus ? cipher.mask(focus, key) : undefined;
         const dispatchStarted = Date.now();
-        const result = advisorSource() === "omp"
-          ? await dispatchOmpAdvisor(ctx.modelRegistry, sel, masked, config.advisorTimeoutMs, safeFocus, _signal)
-          : await dispatchIsolatedAdvisor(sel, masked, config.advisorTimeoutMs, safeFocus, config.providers, _signal);
+        const progress = startAdvisorProgress(_onUpdate, _signal);
+        let result;
+        try {
+          result = advisorSource() === "omp"
+            ? await dispatchOmpAdvisor(ctx.modelRegistry, sel, masked, config.advisorTimeoutMs, safeFocus, _signal, undefined, progress.phase)
+            : await dispatchIsolatedAdvisor(sel, masked, config.advisorTimeoutMs, safeFocus, config.providers, _signal, progress.phase);
+          progress.stop(_signal?.aborted ? "cancelled" : result.ok ? "completed" : "failed");
+        } finally {
+          progress.stop(_signal?.aborted ? "cancelled" : "failed");
+        }
 
         stats.result(result.ok, Date.now() - dispatchStarted, result.usage);
         log(key, "METRICS", JSON.stringify(stats.snapshot()));

@@ -1,3 +1,4 @@
+import type { AdvisorPhase } from './advisorStream.ts';
 import { advisorBlock, advisoryFrame } from './cloudAdvisor.ts';
 import { assertAbstract } from './planning.ts';
 import { splitSelector, type AdvisorDispatchResult } from './advisorDispatch.ts';
@@ -10,7 +11,7 @@ export interface OmpRegistry {
 }
 type Complete = (model: any, context: any, options: any) => Promise<any>;
 export async function dispatchOmpAdvisor(registry: OmpRegistry, selector: string, query: string,
-  timeoutMs = 120000, focus?: string, signal?: AbortSignal, complete?: Complete): Promise<AdvisorDispatchResult> {
+  timeoutMs = 120000, focus?: string, signal?: AbortSignal, complete?: Complete, onPhase?: (phase: AdvisorPhase) => void, streamOverride?: any): Promise<AdvisorDispatchResult> {
   try {
     assertAbstract(query); if (focus) assertAbstract(focus);
     if (!Number.isFinite(timeoutMs) || timeoutMs < 1000 || timeoutMs > 300000) throw new Error('Invalid timeout');
@@ -23,11 +24,24 @@ export async function dispatchOmpAdvisor(registry: OmpRegistry, selector: string
     combined.throwIfAborted();
     if (!auth.ok) return { ok: false, error: 'OMP could not authenticate the selected provider.' };
     // Loaded only in OMP mode; the host owns provider adapters and authentication.
-    const run = complete ?? (await import('@oh-my-pi/pi-ai')).complete;
-    const result = await run(model, {
+    const context = {
       systemPrompt: advisorBlock(focus),
       messages: [{ role: 'user', content: advisoryFrame(query), timestamp: Date.now() }],
-    }, { apiKey: auth.apiKey, headers: auth.headers, signal: combined, maxTokens: 4096 });
+    };
+    const options = { apiKey: auth.apiKey, headers: auth.headers, signal: combined, maxTokens: 4096 };
+    let result;
+    if (onPhase && !complete) {
+      const stream = streamOverride ?? (await import('@oh-my-pi/pi-ai')).stream;
+      const events = stream(model, context, options);
+      for await (const event of events) {
+        if (event.type === 'thinking_start' || event.type === 'thinking_delta') onPhase('thinking');
+        if (event.type === 'text_start' || event.type === 'text_delta') onPhase('answering');
+      }
+      result = await events.result();
+    } else {
+      const run = complete ?? (await import('@oh-my-pi/pi-ai')).complete;
+      result = await run(model, context, options);
+    }
     if (result.stopReason === 'error' || result.stopReason === 'aborted' || result.stopReason === 'length') {
       return { ok: false, error: 'OMP consultation failed, was cancelled, or exceeded the output budget.' };
     }
