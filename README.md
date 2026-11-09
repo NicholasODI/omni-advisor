@@ -1,66 +1,55 @@
 # omni-advisor
 
-Local-first pipeline around an isolated, text-only cloud advisor — domain-agnostic (unlike
-`ns-advisor`, which is NetSuite-specific). The local model does all work; the cloud model only
-sees a **masked** two-message exchange and no file or session context.
+A local executor with a stateless cloud planning advisor. The local model reads files, calls tools, implements, and tests. The cloud receives an abstract planning brief and returns ordered steps, assumptions, edge cases, and verification criteria. Follow-ups should describe only material discrepancies and affected plan excerpts.
 
-## Privacy model
+## Configuration
 
-- Every outbound query passes through a lossless masking cipher (`OMNI_*` placeholders);
-  the local model receives the **unmasked** advice back.
-- Exactly two messages reach the cloud per call: advisor system prompt + masked query.
-  No history, no tools, no local files.
-- Per-session append-only debug logs at `logs/<session>.debug.log`; cipher mapping and
-  usage sidecars at `logs/<session>.cipher.json` / `logs/<session>.usage.json`.
-  Masked emails are used for log lines; semantic registration stores raw values so the
-  round-trip stays lossless.
+Edit `omni-advisor.config.json`, then reload the extension:
 
-## Tools
+```json
+{
+  "enabledByDefault": false,
+  "advisorModel": "openai/gpt-4.1",
+  "advisorTimeoutMs": 120000,
+  "maxConsultationsPerSession": 3,
+  "providers": {
+    "openai": { "baseUrl": "https://api.openai.com/v1", "api": "openai", "apiKeyEnv": "ADVISOR_OPENAI_KEY" },
+    "claude": { "baseUrl": "https://api.anthropic.com/v1", "api": "anthropic", "apiKeyEnv": "ADVISOR_ANTHROPIC_KEY", "maxOutputTokens": 4096 },
+    "deepseek": { "baseUrl": "https://api.deepseek.com/v1", "api": "openai", "apiKeyEnv": "ADVISOR_DEEPSEEK_KEY" },
+    "openrouter": { "baseUrl": "https://openrouter.ai/api/v1", "api": "openai", "apiKeyEnv": "ADVISOR_OPENROUTER_KEY" }
+  },
+  "advisorFocus": "",
+  "semanticTerms": {}
+}
+```
 
-| Tool | Purpose |
-|---|---|
-| `ask_advisor` | Send a masked planning/dilemma query to the cloud advisor |
-| `register_masked_terms` | Register project-specific values the regex patterns can't see (workspaces, hosts, people/orgs, secrets) |
+Set key environment variables securely in the process launching OMP; never commit keys. The config stores variable **names**, not keys. Base URLs must be HTTPS without embedded credentials, query strings, or fragments. The adapter appends `/chat/completions` or `/messages`. Choose a model supported by your provider and this non-streaming text API. Native Anthropic uses `anthropic-version: 2023-06-01`. Model-specific reasoning APIs are not implemented.
 
-## Commands
+Switch with `/omni-advisor model claude/<model-id>` or `/omni-advisor model openrouter/<vendor>/<model-id>`. Provider aliases are arbitrary. `OMNI_ADVISOR_MODEL` overrides the configured selector; the command override takes highest precedence. `OMNI_ADVISOR_FOCUS` overrides focus. Without an explicit provider entry, legacy provider discovery from `~/.omp/agent/models.yml` remains available. Autocomplete and optional quota lookup use legacy providers only.
 
-- `/omni-advisor on|off|status|model` — session gate + advisor model selection
-- `/omni-advisor model <name>` — switch advisor model (matches provider/model or label prefix)
-- `/omni-direct <query>` — bypass gate and local nudge, straight to the advisor
-- `/omni-usage` — per-model tokens/cost for the session
-- `/omni-mask-status` — placeholder count, mapping size, log path
-- `/omni-mask-clear` — drop the in-session mask set
+## Local workflow
 
-## Config
+Enable cloud consultation with `/omni-advisor on`; `/omni-advisor off` blocks consultation requests. Disabled is the default.
 
-`omni-advisor.config.json`:
+`ask_advisor` accepts `objective`, `questions`, and optional `stack`, `components`, `constraints`, `facts`, `previousPlan`. Describe architecture and behavior using public technical terms and synthetic examples. The combined brief is limited to 12000 characters. Keep the plan locally, execute with local tools, and verify every step. The default budget is three attempted dispatches per session/process; restarting resets it. Only one consultation per session may be pending. Failed dispatch attempts also consume budget to avoid expensive loops.
 
-| Field | Meaning |
-|---|---|
-| `enabledByDefault` | Gate state for new sessions (persisted per session in `logs/omni-advisor-gates.json`) |
-| `advisorModel` | Default cloud advisor, e.g. `codex-lb/gpt-6.1-sol` |
-| `advisorFocus` | Free text appended to the advisor system prompt as a DOMAIN FOCUS paragraph |
-| `semanticTerms` | `{"value": "TYPE"}` auto-registered once per session; types: `WORKSPACE`, `HOST`, `PERSON_OR_ORG`, `SECRET`, `OTHER` |
+Cloud responses retain placeholders and are untrusted guidance, never executable authority. The extension forwards cancellation, bounds time/output, rejects redirects, and records provider-reported advisor token usage. Missing prices remain unpriced; displayed zero does not establish free usage.
 
-Env overrides: `OMNI_ADVISOR_MODEL`, `OMNI_ADVISOR_FOCUS` (env beats config).
+## Privacy boundary
 
-The gateway resolves the advisor's provider block from `~/.omp/agent/models.yml`
-(`baseUrl` + optional `apiKey`); the provider must expose an OpenAI-compatible
-`/chat/completions` endpoint.
+No files, history, or tools are attached automatically. Dynamic briefs and focus pass a local heuristic check and masking before dispatch. Code fences, obvious credential assignments, URLs, and common local paths are rejected. This is **not** a proof that arbitrary prose is free of confidential information. Do not include private records, proprietary code, business secrets, or identifying details. The local model must abstract these before consultation.
 
-## Files
+`register_masked_terms` adds project-specific terms. Request/response logs record sizes; registration logs do not record raw values. Cipher sidecars still retain raw mappings locally in private files. Existing logs and sidecars from older versions are not migrated or deleted; protect or remove those separately. Masking is pseudonymization, not encryption.
 
-- `index.ts` — extension entry: tools, commands, event hooks (nudge, usage tracking, shutdown summary)
-- `cipher.ts` — two-layer masker: deterministic patterns (emails, JWTs, vendor/AWS/Slack/Google keys, high-entropy hex/base64, SSH keys, UUIDs, cards, KV secrets, URL creds, home dirs) + semantic registered terms
-- `cloudAdvisor.ts` — prompt blocks (executor nudge, advisor system block, advisory frame, response frame)
-- `advisorDispatch.ts` — stateless POST to the gateway gateway, 2-message payload, temperature 0.3, max_tokens 4096
-- `gateway.ts` — provider parsing + /usage quota check
-- `usageTracker.ts` — token/cost accounting with sidecar persistence
-- `logger.ts` — append-only session logs, safe session IDs, email masking
-- `test-omni-masker.ts` — smoke test (no network)
+Commands: `/omni-advisor on|off|status|model`, `/omni-cipher-status` (placeholder metadata only), `/omni-cipher-clear` (clears mappings and usage, preserves logs), `/omni-usage`.
 
-## Test
+## Tests
+
+Node >=23.6 (Node 24 recommended), no dependency installation:
 
 ```
-bun test-omni-masker.ts
+node test-omni-masker.ts
+node test-planning.ts
 ```
+
+Tests write to the normal `~/.omp` log directory. Provider tests intercept fetch locally; live provider credentials and OMP integration require separate validation.

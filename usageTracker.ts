@@ -14,7 +14,7 @@
 // on first access, removed by clearUsage.
 import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { LOG_DIR } from "./logger.ts";
+import { LOG_DIR, safeSessionId } from "./logger.ts";
 
 export interface UsageTotals {
   input: number;
@@ -58,7 +58,7 @@ interface SessionUsage {
 const sessions = new Map<string, SessionUsage>();
 
 function sidecarPath(key: string): string {
-  return join(LOG_DIR, `${key}.usage.json`);
+  return join(LOG_DIR, `${safeSessionId(key)}.usage.json`);
 }
 
 /** Best-effort: accounting persistence must never break the turn. */

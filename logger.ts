@@ -65,9 +65,9 @@ export function logPath(sessionId: string): string {
 /** Append one tagged, timestamped line to the session's log. Never throws. */
 export function log(sessionId: string, tag: LogTag, message: string): void {
   try {
-    mkdirSync(LOG_DIR, { recursive: true });
+    mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
     const line = `[${new Date().toISOString()}] [${tag}] session=${safeSessionId(sessionId)} ${message.replace(/\r?\n/g, " | ")}\n`;
-    appendFileSync(logPath(sessionId), line, "utf8");
+    appendFileSync(logPath(sessionId), line, { encoding: "utf8", mode: 0o600 });
   } catch {
     // Logging must never break the pipeline.
   }

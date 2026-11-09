@@ -1,138 +1,66 @@
-// advisorDispatch — isolated, stateless cloud-advisor completion call.
-//
-// The cloud advisor is invoked as a SINGLE, self-contained /chat/completions
-// request to the advisor provider's OpenAI-compatible gateway. The request
-// body contains exactly two messages — the advisor system prompt
-// (advisorBlock, with optional domain focus) and the one masked query
-// (advisoryFrame) — and NOTHING else. No session history, no tools, and no
-// local file context ever reach the cloud model.
-//
-// This is the privacy boundary of the pipeline. Because the call is
-// stateless, the main session model never changes: there is no mid-session
-// model switch — the tool simply awaits this call and returns the unmasked
-// answer inline.
-//
-// Gateway discovery (baseUrl + optional apiKey) is parsed from
-// ~/.omp/agent/models.yml by gateway.loadProvider().
-import { advisorBlock, advisoryFrame } from "./cloudAdvisor.ts";
-import { loadProvider, type ProviderEndpoint } from "./gateway.ts";
-
+import { advisorBlock, advisoryFrame } from './cloudAdvisor.ts';
+import { loadProvider } from './gateway.ts';
+import { assertAbstract } from './planning.ts';
+export interface ProviderConfig {
+  baseUrl: string;
+  api: 'openai' | 'anthropic';
+  apiKeyEnv?: string;
+  maxOutputTokens?: number;
+}
 export interface AdvisorDispatchResult {
-  ok: boolean;
-  /** Raw (still-masked) advisor response text, present when ok. */
-  text?: string;
-  /** Human-readable failure reason, present when !ok. */
-  error?: string;
+  ok: boolean; text?: string; error?: string;
+  usage?: { input: number; output: number };
 }
-
-/** Split a "provider/model" selector into its parts. */
 export function splitSelector(selector: string): { provider: string; model: string } {
-  const i = selector.indexOf("/");
-  if (i < 0) return { provider: "", model: selector };
-  return { provider: selector.slice(0, i), model: selector.slice(i + 1) };
+  const i = selector.indexOf('/');
+  return i < 0 ? { provider: '', model: selector } : { provider: selector.slice(0, i), model: selector.slice(i + 1) };
 }
-
-/**
- * Run one isolated advisor completion. The cloud model sees only
- * [advisorBlock(focus), advisoryFrame(maskedQuery)] — a fresh two-message
- * conversation with no history and no tools.
- */
-export async function dispatchIsolatedAdvisor(
-  selector: string,
-  maskedQuery: string,
-  timeoutMs = 120000,
-  focus?: string,
-): Promise<AdvisorDispatchResult> {
-  const { provider, model } = splitSelector(selector);
-  if (!provider) {
-    return {
-      ok: false,
-      error: `advisorModel "${selector}" must be a provider/model selector — the advisor dispatches through the provider's OpenAI-compatible gateway.`,
-    };
-  }
-
-  const gw: ProviderEndpoint | null = loadProvider(provider);
-  if (!gw) {
-    return {
-      ok: false,
-      error: `Provider "${provider}" not found in ~/.omp/agent/models.yml or has no baseUrl. The advisor needs an OpenAI-compatible endpoint for "${provider}".`,
-    };
-  }
-
-  const url = gw.baseUrl.replace(/\/$/, "") + "/chat/completions";
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (gw.apiKey) headers["Authorization"] = `Bearer ${gw.apiKey}`;
-  const body = {
-    model,
-    temperature: 0.3,
-    max_tokens: 4096,
-    messages: [
-      { role: "system", content: advisorBlock(focus) },
-      { role: "user", content: advisoryFrame(maskedQuery) },
-    ],
-  };
-
-  let res: Response;
+export async function dispatchIsolatedAdvisor(selector: string, query: string, timeoutMs = 120000, focus?: string,
+  providers?: Record<string, ProviderConfig>, signal?: AbortSignal): Promise<AdvisorDispatchResult> {
   try {
-    res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(timeoutMs),
+    assertAbstract(query);
+    if (focus) assertAbstract(focus);
+    const { provider, model } = splitSelector(selector);
+    if (!provider || !model) throw new Error('Use a provider/model selector.');
+    const configured = providers?.[provider];
+    const legacy = configured ? null : loadProvider(provider);
+    if (!configured && !legacy) throw new Error('Provider is not configured.');
+    const base = new URL(configured?.baseUrl ?? legacy!.baseUrl);
+    if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash) throw new Error('Provider baseUrl must be HTTPS without credentials, query, or fragment.');
+    const api = configured?.api ?? 'openai';
+    if (!['openai', 'anthropic'].includes(api)) throw new Error('Unsupported provider API format.');
+    const key = configured?.apiKeyEnv ? process.env[configured.apiKeyEnv] : legacy?.apiKey;
+    if (configured?.apiKeyEnv && !key) throw new Error(`Missing API-key environment variable: ${configured.apiKeyEnv}`);
+    const tokens = configured?.maxOutputTokens ?? 4096;
+    if (!Number.isInteger(tokens) || tokens < 256 || tokens > 16384) throw new Error('maxOutputTokens must be an integer from 256 to 16384.');
+    if (!Number.isFinite(timeoutMs) || timeoutMs < 1000 || timeoutMs > 300000) throw new Error('Invalid advisor timeout.');
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (key) headers[api === 'anthropic' ? 'x-api-key' : 'Authorization'] = api === 'anthropic' ? key : `Bearer ${key}`;
+    if (api === 'anthropic') headers['anthropic-version'] = '2023-06-01';
+    const system = advisorBlock(focus);
+    const messages = [{ role: 'user', content: advisoryFrame(query) }];
+    const body = api === 'anthropic'
+      ? { model, max_tokens: tokens, system, messages }
+      : { model, max_tokens: tokens, messages: [{ role: 'system', content: system }, ...messages] };
+    const res = await fetch(base.href.replace(/\/$/, '') + (api === 'anthropic' ? '/messages' : '/chat/completions'), {
+      method: 'POST', headers, body: JSON.stringify(body), redirect: 'error',
+      signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])]),
     });
+    if (!res.ok) { await res.body?.cancel(); throw new Error(`Provider returned HTTP ${res.status}.`); }
+    const reader = res.body?.getReader();
+    if (!reader) throw new Error('Empty provider response.');
+    const chunks: Uint8Array[] = []; let size = 0;
+    try { while (true) { const { done, value } = await reader.read(); if (done) break; size += value.length; if (size > 256000) throw new Error('Provider response too large.'); chunks.push(value); } }
+    finally { await reader.cancel(); }
+    const data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    if (data.stop_reason === 'max_tokens' || data.choices?.[0]?.finish_reason === 'length') throw new Error('Plan truncated; increase maxOutputTokens or narrow the brief.');
+    const text = api === 'anthropic' ? data.content?.filter((p: { type: string }) => p.type === 'text').map((p: { text: string }) => p.text).join('\n') : data.choices?.[0]?.message?.content;
+    if (typeof text !== 'string' || !text.trim()) throw new Error('Provider returned no text plan.');
+    const input = api === 'anthropic' ? data.usage?.input_tokens : data.usage?.prompt_tokens;
+    const output = api === 'anthropic' ? data.usage?.output_tokens : data.usage?.completion_tokens;
+    return { ok: true, text, ...(Number.isFinite(input) && input >= 0 && Number.isFinite(output) && output >= 0 ? { usage: { input, output } } : {}) };
   } catch (err) {
-    return {
-      ok: false,
-      error: `advisor request failed: ${err instanceof Error ? err.message : String(err)}`,
-    };
+    // Never reflect arbitrary upstream bodies or network errors containing credentials.
+    return { ok: false, error: signal?.aborted ? 'Consultation cancelled.' : err instanceof Error && /^(Provider |Use |Missing |Unsupported |Invalid |maxOutput|Plan |Privacy |Provide |Empty )/.test(err.message) ? err.message : 'Consultation failed; check provider configuration or retry later.' };
   }
-
-  if (!res.ok) {
-    const detail = await safeBodyText(res);
-    return {
-      ok: false,
-      error: `gateway /chat/completions for "${provider}" returned HTTP ${res.status}${detail ? `: ${detail}` : ""}`,
-    };
-  }
-
-  let data: unknown;
-  try {
-    data = await res.json();
-  } catch (err) {
-    return {
-      ok: false,
-      error: `advisor returned a non-JSON body: ${err instanceof Error ? err.message : String(err)}`,
-    };
-  }
-
-  const text = extractContent(data);
-  if (!text) {
-    return { ok: false, error: "advisor returned an empty response" };
-  }
-  return { ok: true, text };
-}
-
-/** Best-effort capture of an error body for logging (truncated). */
-async function safeBodyText(res: Response): Promise<string> {
-  try {
-    return (await res.text()).slice(0, 300);
-  } catch {
-    return "";
-  }
-}
-
-/** Pull choices[0].message.content out of an OpenAI /chat/completions body. */
-function extractContent(data: unknown): string | null {
-  if (!data || typeof data !== "object") return null;
-  if (!("choices" in data) || !Array.isArray(data.choices)) return null;
-
-  const first = data.choices[0];
-  if (!first || typeof first !== "object" || !("message" in first)) return null;
-
-  const message = first.message;
-  if (!message || typeof message !== "object" || !("content" in message)) return null;
-
-  const content = message.content;
-  if (typeof content !== "string" || !content.trim()) return null;
-  return content;
 }
