@@ -53,3 +53,11 @@ node test-planning.ts
 ```
 
 Tests write to the normal `~/.omp` log directory. Provider tests intercept fetch locally; live provider credentials and OMP integration require separate validation.
+
+## Choose a model from the running OMP instance
+
+Run `/omni-advisor model omp` to open a picker of the current instance's available models. Selection switches the advisor source to OMP and reuses its model registry, provider adapters, credentials, and provider headers. The main executor model is unchanged. The completion receives only the advisor system prompt and one abstract brief, with no tools or session history. Existing cloud gate, privacy checks, and consultation budgets still apply.
+
+For persistent selection set `"advisorSource": "omp"` and `"advisorModel": "provider/model-id"` in the config. For temporary selection use `/omni-advisor source omp` followed by `/omni-advisor model provider/model-id`. Return to explicit endpoint configuration with `/omni-advisor source config`. Command source/model overrides last for the process. OMP mode requires the host's `@oh-my-pi/pi-ai` package and registry APIs; unsupported/missing authentication fails without falling back to another provider. Endpoint transport, authentication refresh, and provider-specific behavior are managed by OMP in this mode. Provider support depends on the installed OMP version.
+
+Additional standalone adapter test: `node test-omp-advisor.ts`. Live OMP integration is not covered by these mock tests.
