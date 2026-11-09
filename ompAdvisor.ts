@@ -12,7 +12,7 @@ export interface OmpRegistry {
 }
 type Complete = (model: any, context: any, options: any) => Promise<any>;
 export async function dispatchOmpAdvisor(registry: OmpRegistry, selector: string, query: string,
-  timeoutMs = 120000, focus?: string, signal?: AbortSignal, complete?: Complete, onPhase?: (phase: AdvisorPhase) => void, streamOverride?: any, mode: ExecutionMode = 'local-led'): Promise<AdvisorDispatchResult> {
+  timeoutMs = 120000, focus?: string, signal?: AbortSignal, complete?: Complete, onPhase?: (phase: AdvisorPhase) => void, streamOverride?: any, mode: ExecutionMode = 'balanced'): Promise<AdvisorDispatchResult> {
   try {
     assertAbstract(query); if (focus) assertAbstract(focus);
     if (!Number.isFinite(timeoutMs) || timeoutMs < 1000 || timeoutMs > 300000) throw new Error('Invalid timeout');

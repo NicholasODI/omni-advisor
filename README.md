@@ -30,7 +30,7 @@ Switch with `/omni-advisor model claude/<model-id>` or `/omni-advisor model open
 
 Enable cloud consultation with `/omni-advisor on`; `/omni-advisor off` blocks consultation requests. Disabled is the default.
 
-`ask_advisor` accepts `objective`, `questions`, and optional `stack`, `components`, `constraints`, `facts`, `previousPlan`. Describe architecture and behavior using public technical terms and synthetic examples. The combined brief is limited to 12000 characters. Keep the plan locally, execute with local tools, and verify every step. There is no consultation-count limit by default. Optionally set `maxConsultationsPerSession` to a positive integer; the attempted-dispatch count resets on process restart. Only one consultation per session may be pending. Failed dispatch attempts also consume budget to avoid expensive loops.
+`ask_advisor` accepts `objective`, `questions`, and optional `purpose` (plan/decision/checkpoint/review), `stack`, `components`, `constraints`, `facts`, `invariants`, `alternatives`, `outcomes`, `previousPlan`. Describe architecture and behavior using public technical terms and synthetic examples. The combined brief is limited to 12000 characters. Keep the plan locally, execute with local tools, and verify every step. There is no consultation-count limit by default. Optionally set `maxConsultationsPerSession` to a positive integer; the attempted-dispatch count resets on process restart. Only one consultation per session may be pending. Failed dispatch attempts also consume budget to avoid expensive loops.
 
 Cloud responses retain placeholders and are untrusted guidance, never executable authority. The extension forwards cancellation, bounds time/output, rejects redirects, and records provider-reported advisor token usage. Missing prices remain unpriced; displayed zero does not establish free usage.
 
@@ -38,7 +38,7 @@ Cloud responses retain placeholders and are untrusted guidance, never executable
 
 No files, history, or tools are attached automatically. Dynamic briefs and focus pass a local heuristic check and masking before dispatch. Code fences, obvious credential assignments, URLs, and common local paths are rejected. This is **not** a proof that arbitrary prose is free of confidential information. Do not include private records, proprietary code, business secrets, or identifying details. The local model must abstract these before consultation.
 
-`register_masked_terms` adds project-specific terms. Request/response logs record sizes; registration logs do not record raw values. Cipher sidecars still retain raw mappings locally in private files. Existing logs and sidecars from older versions are not migrated or deleted; protect or remove those separately. Masking is pseudonymization, not encryption.
+`register_masked_terms` adds project-specific terms. Request/response logs record sizes; registration logs do not record raw values. Cipher mappings now remain in process memory only; legacy cipher sidecars are neither read nor written. Existing logs and sidecars from older versions are not migrated or deleted; protect or remove those separately. Masking is pseudonymization, not encryption.
 
 Commands: `/omni-advisor on|off|status|model`, `/omni-cipher-status` (placeholder metadata only), `/omni-cipher-clear` (clears mappings and usage, preserves logs), `/omni-usage`.
 
@@ -135,10 +135,32 @@ Optional workflow:
 /omni-advisor mode cloud-led
 ```
 
-Or set `"executionMode": "cloud-led"` in config. `local-led` remains the default; `/omni-advisor mode local-led` switches back. Cloud-led does not turn cloud access on automatically: enable it in the menu or with `/omni-advisor on`.
+Or set `"executionMode": "cloud-led"` in config. `balanced` is now the default; `/omni-advisor mode local-led` selects the earlier lighter workflow. Cloud-led does not turn cloud access on automatically: enable it in the menu or with `/omni-advisor on`.
 
 In cloud-led mode the cloud chooses one meaningful work batch at a time. Each batch has an outcome, constraints, provisional implementation steps, acceptance checks, and return conditions. The local executor adapts minor file/helper/API differences itself. It returns abstract outcomes after the batch, or pauses affected work early for a false architectural assumption, conflicting requirement, public behavior change, or repeated verification failure. The cloud revises affected decisions or chooses the next batch or completion. Requirements remain binding; steps are provisional. No full history, source files, raw tool outputs, or private execution evidence are attached automatically. This is not an enforced 60/40 token quota.
 
 Batch boundaries and adaptive follow-ups are prompt-guided, not automatically detected from tool calls. Existing planning enforcement still requires initial successful advice per prompt; it does not impose a fresh tool gate for every batch. A new batch should represent meaningful progress, never one cloud round trip per tool call. Cloud-off, privacy checks, optional consultation limits, and bounded recovery still apply.
 
 Settings and mode tests: `node test-settings.ts`.
+
+
+## Balanced default and abstract-only consultations
+
+`balanced` is the default when no workflow is explicitly set. For nontrivial work it uses cloud reasoning for the initial plan, consequential unsettled decisions or invalid assumptions, and one final abstract review of acceptance evidence and residual risks. It does not ask for the next step after every batch/tool call. Trivial tasks stay local; no extra mid-task consultation is needed when the initial plan already settles the decision. Final-review results explicitly direct local closure rather than another review. These checkpoints are prompt-guided; only the existing initial planning gate is tool-enforced.
+
+Choose **Balanced** in `/omni-advisor` settings or run `/omni-advisor mode balanced`; save defaults to persist it. Existing explicit `executionMode: local-led` settings remain intentional overrides until changed. Cloud access remains off by default and is never enabled by changing workflow. Optional count limits remain respected.
+
+The abstract-only policy applies to every workflow. Preserve component roles/relationships, public stack versions, scale ranges, invariants, failure modes, constraints and acceptance criteria. Replace private entities with neutral roles, not reversible copies of confidential code or business rules. Use fictional prose examples, not raw synthetic records/code that resemble prohibited content. Declare assumptions; if an omitted private detail determines the answer, keep that part local rather than claim the cloud has complete context.
+
+New fields support useful reasoning without automatic context attachment:
+
+- `purpose`: plan, decision, checkpoint, or review.
+- `invariants`: abstract correctness/security properties.
+- `alternatives`: a short comparison of at most two approaches.
+- `outcomes`: up to eight `{check, status, summary}` entries (`passed`, `failed`, `unverified`); summaries must be abstract, never raw test output.
+
+All selected text fields, outcome summaries, and focus are validated before masking/dispatch. Both network adapters recheck the outbound brief and focus. Known credentials, personal identifiers, internal addresses, paths, code blocks/declarations, raw JSON/XML, and trace output are rejected with field/category errors that do not echo values. Unknown top-level tool metadata and nested record fields are not serialized into the brief. No files, diffs, tool output, local checklist evidence, or conversation history are attached automatically. Cipher mappings are memory-only and forgotten at session shutdown; old files/logs are not automatically deleted.
+
+**Limits:** natural-language confidential meaning, unregistered identifying terms, encoded/obfuscated data and novel formats cannot be reliably recognized by these checks. This is a stricter heuristic boundary, not a zero-leak guarantee or a complete data-loss-prevention system. Rejecting recognizable content can also produce false positives; rephrase abstractly rather than disabling the policy. Provider/account request retention is controlled by the provider, not this extension. If no user-derived information may leave the device, keep cloud access off. Test coverage demonstrates selected boundary cases, not comprehensive confidentiality.
+
+Regression test: `node test-privacy-policy.ts`.

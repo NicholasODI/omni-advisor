@@ -19,7 +19,7 @@ export function splitSelector(selector: string): { provider: string; model: stri
   return i < 0 ? { provider: '', model: selector } : { provider: selector.slice(0, i), model: selector.slice(i + 1) };
 }
 export async function dispatchIsolatedAdvisor(selector: string, query: string, timeoutMs = 120000, focus?: string,
-  providers?: Record<string, ProviderConfig>, signal?: AbortSignal, onPhase?: (phase: AdvisorPhase) => void, mode: ExecutionMode = 'local-led'): Promise<AdvisorDispatchResult> {
+  providers?: Record<string, ProviderConfig>, signal?: AbortSignal, onPhase?: (phase: AdvisorPhase) => void, mode: ExecutionMode = 'balanced'): Promise<AdvisorDispatchResult> {
   try {
     assertAbstract(query);
     if (focus) assertAbstract(focus);

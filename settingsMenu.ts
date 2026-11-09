@@ -25,8 +25,8 @@ export async function openSettings(ui: MenuUI, get: () => SettingsState, actions
     const index = options.indexOf(choice);
     if (index === 0) actions.change({ enabled: !s.enabled });
     if (index === 1) {
-      const mode = await ui.select('Workflow (cloud-led consults between work batches)', ['Local-led — plan once, execute locally', 'Cloud-led — cloud decides next batch']);
-      if (mode) actions.change({ mode: mode.startsWith('Cloud-led') ? 'cloud-led' : 'local-led' });
+      const mode = await ui.select('Workflow (cloud-led consults between work batches)', ['Balanced — plan, key decisions, final review (default)', 'Local-led — plan once, execute locally', 'Cloud-led — cloud decides next batch']);
+      if (mode) actions.change({ mode: mode.startsWith('Cloud-led') ? 'cloud-led' : mode.startsWith('Balanced') ? 'balanced' : 'local-led' });
     }
     if (index === 2) actions.change({ enforced: !s.enforced });
     if (index === 3) {
