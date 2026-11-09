@@ -1,3 +1,4 @@
+import type { ExecutionMode } from './executionMode.ts';
 import { readAdvisorStream, type AdvisorPhase } from './advisorStream.ts';
 import { advisorBlock, advisoryFrame } from './cloudAdvisor.ts';
 import { loadProvider } from './gateway.ts';
@@ -18,7 +19,7 @@ export function splitSelector(selector: string): { provider: string; model: stri
   return i < 0 ? { provider: '', model: selector } : { provider: selector.slice(0, i), model: selector.slice(i + 1) };
 }
 export async function dispatchIsolatedAdvisor(selector: string, query: string, timeoutMs = 120000, focus?: string,
-  providers?: Record<string, ProviderConfig>, signal?: AbortSignal, onPhase?: (phase: AdvisorPhase) => void): Promise<AdvisorDispatchResult> {
+  providers?: Record<string, ProviderConfig>, signal?: AbortSignal, onPhase?: (phase: AdvisorPhase) => void, mode: ExecutionMode = 'local-led'): Promise<AdvisorDispatchResult> {
   try {
     assertAbstract(query);
     if (focus) assertAbstract(focus);
@@ -39,7 +40,7 @@ export async function dispatchIsolatedAdvisor(selector: string, query: string, t
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (key) headers[api === 'anthropic' ? 'x-api-key' : 'Authorization'] = api === 'anthropic' ? key : `Bearer ${key}`;
     if (api === 'anthropic') headers['anthropic-version'] = '2023-06-01';
-    const system = advisorBlock(focus);
+    const system = advisorBlock(focus, mode);
     const messages = [{ role: 'user', content: advisoryFrame(query) }];
     const body = api === 'anthropic'
       ? { model, max_tokens: tokens, system, messages }

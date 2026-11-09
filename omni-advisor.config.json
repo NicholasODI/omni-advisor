@@ -3,5 +3,6 @@
   "advisorModel": "codex-lb/gpt-6.1-sol",
   "advisorFocus": "",
   "semanticTerms": {},
-  "enforcePlanning": false
+  "enforcePlanning": false,
+  "executionMode": "local-led"
 }
