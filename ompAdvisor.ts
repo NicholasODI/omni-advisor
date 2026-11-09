@@ -1,3 +1,4 @@
+import type { ExecutionMode } from './executionMode.ts';
 import type { AdvisorPhase } from './advisorStream.ts';
 import { advisorBlock, advisoryFrame } from './cloudAdvisor.ts';
 import { assertAbstract } from './planning.ts';
@@ -11,7 +12,7 @@ export interface OmpRegistry {
 }
 type Complete = (model: any, context: any, options: any) => Promise<any>;
 export async function dispatchOmpAdvisor(registry: OmpRegistry, selector: string, query: string,
-  timeoutMs = 120000, focus?: string, signal?: AbortSignal, complete?: Complete, onPhase?: (phase: AdvisorPhase) => void, streamOverride?: any): Promise<AdvisorDispatchResult> {
+  timeoutMs = 120000, focus?: string, signal?: AbortSignal, complete?: Complete, onPhase?: (phase: AdvisorPhase) => void, streamOverride?: any, mode: ExecutionMode = 'local-led'): Promise<AdvisorDispatchResult> {
   try {
     assertAbstract(query); if (focus) assertAbstract(focus);
     if (!Number.isFinite(timeoutMs) || timeoutMs < 1000 || timeoutMs > 300000) throw new Error('Invalid timeout');
@@ -25,7 +26,7 @@ export async function dispatchOmpAdvisor(registry: OmpRegistry, selector: string
     if (!auth.ok) return { ok: false, error: 'OMP could not authenticate the selected provider.' };
     // Loaded only in OMP mode; the host owns provider adapters and authentication.
     const context = {
-      systemPrompt: advisorBlock(focus),
+      systemPrompt: advisorBlock(focus, mode),
       messages: [{ role: 'user', content: advisoryFrame(query), timestamp: Date.now() }],
     };
     const options = { apiKey: auth.apiKey, headers: auth.headers, signal: combined, maxTokens: 4096 };

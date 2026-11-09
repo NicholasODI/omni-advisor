@@ -121,3 +121,24 @@ There are no new tools or configuration steps. Cloud-off and limits still apply;
 
 
 Progress refreshes locally once per second (no additional cloud requests). In OMP's standard footer, waiting is muted, thinking is warning-colored, answering uses the accent color, completion uses success, failure uses error, and cancellation uses warning. Exact hues follow your OMP theme. Tool update text remains plain for transcripts/RPC clients. Missing footer/theme support falls back to the regular tool updates. The footer shows the last terminal status until the next consultation or session shutdown.
+
+
+## Interactive settings and optional cloud-led execution
+
+Run `/omni-advisor` (no arguments) or `/omni-advisor settings` to open the interactive terminal settings menu. Use arrow keys and Enter; Escape closes a dialog. The menu groups cloud access, workflow, planning enforcement, provider source, advisor model, provider endpoint configuration, and limits/timeouts. OMP source uses a model picker from the running instance. Configured source accepts a `provider/model-id` selector. Provider editing asks for the API-key **environment variable name**, never a credential value. Use your terminal environment to supply the key.
+
+Choices take effect immediately; Escape does not undo earlier choices in the parent menu. `Save current choices as defaults` explicitly saves to the extension's `omni-advisor.config.json`, retaining unrelated fields. Workflow and enforcement choices are session-scoped until saved. Model/source overrides and endpoint/limit/timeout edits are process-wide until saved. Saving defaults does not configure credentials. The menu uses built-in OMP selection/input dialogs, with no additional UI dependency; command/config fallbacks remain available on noninteractive hosts.
+
+Optional workflow:
+
+```
+/omni-advisor mode cloud-led
+```
+
+Or set `"executionMode": "cloud-led"` in config. `local-led` remains the default; `/omni-advisor mode local-led` switches back. Cloud-led does not turn cloud access on automatically: enable it in the menu or with `/omni-advisor on`.
+
+In cloud-led mode the cloud chooses one meaningful work batch at a time. Each batch has an outcome, constraints, provisional implementation steps, acceptance checks, and return conditions. The local executor adapts minor file/helper/API differences itself. It returns abstract outcomes after the batch, or pauses affected work early for a false architectural assumption, conflicting requirement, public behavior change, or repeated verification failure. The cloud revises affected decisions or chooses the next batch or completion. Requirements remain binding; steps are provisional. No full history, source files, raw tool outputs, or private execution evidence are attached automatically. This is not an enforced 60/40 token quota.
+
+Batch boundaries and adaptive follow-ups are prompt-guided, not automatically detected from tool calls. Existing planning enforcement still requires initial successful advice per prompt; it does not impose a fresh tool gate for every batch. A new batch should represent meaningful progress, never one cloud round trip per tool call. Cloud-off, privacy checks, optional consultation limits, and bounded recovery still apply.
+
+Settings and mode tests: `node test-settings.ts`.

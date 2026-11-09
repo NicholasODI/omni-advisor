@@ -40,6 +40,9 @@ import { assertAbstract, planningText, validateBrief, PrivacyError } from "./pla
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
+import { saveSettings } from "./settingsStorage.ts";
+import { openSettings, editProvider } from "./settingsMenu.ts";
+import { executionInstructions, type ExecutionMode } from "./executionMode.ts";
 import { executorNudge, toolResponseFrame } from "./cloudAdvisor.ts";
 import * as cipher from "./cipher.ts";
 import * as usage from "./usageTracker.ts";
@@ -65,6 +68,7 @@ import { log, logPath } from "./logger.ts";
 interface OmniAdvisorConfig {
   enabledByDefault?: boolean;
   enforcePlanning?: boolean;
+  executionMode?: ExecutionMode;
   providers?: Record<string, ProviderConfig>;
   advisorSource?: "config" | "omp";
   maxConsultationsPerSession?: number;
@@ -206,6 +210,8 @@ function ensureConfigTerms(key: string): void {
 
 /** Process-lifetime advisor model override set via /omni-advisor model. */
 let advisorModelOverride: string | undefined;
+const executionModeOverrides = new Map<string, ExecutionMode>();
+function executionMode(key: string): ExecutionMode { return executionModeOverrides.get(key) ?? config.executionMode ?? "local-led"; }
 let sourceOverride: "config" | "omp" | undefined;
 function advisorSource(): "config" | "omp" { return sourceOverride ?? config.advisorSource ?? "config"; }
 
@@ -353,8 +359,8 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         let result;
         try {
           result = advisorSource() === "omp"
-            ? await dispatchOmpAdvisor(ctx.modelRegistry, sel, masked, config.advisorTimeoutMs, safeFocus, _signal, undefined, progress.phase)
-            : await dispatchIsolatedAdvisor(sel, masked, config.advisorTimeoutMs, safeFocus, config.providers, _signal, progress.phase);
+            ? await dispatchOmpAdvisor(ctx.modelRegistry, sel, masked, config.advisorTimeoutMs, safeFocus, _signal, undefined, progress.phase, undefined, executionMode(key))
+            : await dispatchIsolatedAdvisor(sel, masked, config.advisorTimeoutMs, safeFocus, config.providers, _signal, progress.phase, executionMode(key));
           progress.stop(_signal?.aborted ? "cancelled" : result.ok ? "completed" : "failed");
         } finally {
           progress.stop(_signal?.aborted ? "cancelled" : "failed");
@@ -381,7 +387,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         if (advisorSource() === "config" && !config.providers?.[splitSelector(sel).provider]) void refreshQuota(key);
 
         return {
-          content: [{ type: "text", text: toolResponseFrame(unmasked) }],
+          content: [{ type: "text", text: toolResponseFrame(unmasked, executionMode(key)) }],
           details: { advisor: sel },
         };
       } catch (err) {
@@ -433,7 +439,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         readiness = explicit.apiKeyEnv && !process.env[explicit.apiKeyEnv] ? "required key environment variable missing" : "configuration present; connectivity unverified";
       } else if (loadProvider(provider)) readiness = "legacy configuration present; connectivity unverified";
       const status = { enabled: isAdvisorEnabled(key), isolatedSession: key !== "unknown", source: advisorSource(), model: selector,
-        enforcedPlanning: planningEnforced(key), awaitingPlan: planningEnforced(key) && !planningGate.ready(key),
+        executionMode: executionMode(key), enforcedPlanning: planningEnforced(key), awaitingPlan: planningEnforced(key) && !planningGate.ready(key),
         pending: pendingConsultations.has(key), maxConsultationsPerSession: config.maxConsultationsPerSession ?? null,
         attemptedDispatches: consultationCounts.get(key) ?? 0, providerReadiness: readiness,
         advicePlaceholders: "retained", measurements: sessionMetrics(key).snapshot() };
@@ -512,7 +518,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       if (enforced) planningGate.begin(key);
     }
     if (!isAdvisorEnabled(key) && !enforced) return;
-    return { systemPrompt: [...event.systemPrompt, executorNudge(), ...(enforced ? [enforcedPlanningPrompt, ...(planningGate.ready(key) ? ["A successful cloud plan is already approved for the current task. Continue local execution from the retained plan/checklist; compaction does not require another consultation."] : [])] : [])] };
+    return { systemPrompt: [...event.systemPrompt, executorNudge(), ...(executionMode(key) === "cloud-led" ? [executionInstructions("cloud-led")] : []), ...(enforced ? [enforcedPlanningPrompt, ...(planningGate.ready(key) ? ["A successful cloud plan is already approved for the current task. Continue local execution from the retained plan/checklist; compaction does not require another consultation."] : [])] : [])] };
   });
 
   pi.on("tool_call", async (event, ctx) => {
@@ -568,6 +574,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     gateOnBySession.delete(key);
     planningGate.clear(key);
     planningOverrides.delete(key);
+    executionModeOverrides.delete(key);
     metrics.delete(key);
     recoveryGuards.delete(key);
     checklists.delete(key);
@@ -579,7 +586,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
   // Command: /omni-advisor on | off | status | model [provider/model]
   // ---------------------------------------------------------------------
   pi.registerCommand("omni-advisor", {
-    description: "omni-advisor: control the cloud advisor (on / off / status / model)",
+    description: "Open advisor settings (or use on/off/status/model/mode commands)",
     getArgumentCompletions(arg: string) {
       const text = arg || "";
       const modelWord = text.match(/^model[ \t]+(\S*)$/i);
@@ -598,6 +605,9 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       const p = text.trim().toLowerCase();
       if (p.includes(" ")) return null;
       const subs = [
+        { label: "settings", value: "settings", description: "Open interactive settings" },
+        { label: "mode local-led", value: "mode local-led", description: "Plan then execute locally" },
+        { label: "mode cloud-led", value: "mode cloud-led", description: "Cloud selects bounded execution batches" },
         { label: "planning on", value: "planning on", description: "Require abstract cloud planning before execution tools" },
         { label: "planning off", value: "planning off", description: "Disable planning enforcement" },
         { label: "on", value: "on", description: "Enable advisor nudge for this session" },
@@ -615,6 +625,38 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       const key = sessionKey(ctx);
       const argNorm = (arg || "").trim().toLowerCase();
       const raw = (arg || "").trim();
+      if (!raw || argNorm === "settings") {
+        if (ctx.hasUI === false || !ctx.ui?.select || !ctx.ui?.input) { ctx.ui.notify("Interactive settings unavailable. Use on/off/status/model/source/mode/planning commands or edit config.", "warning"); return; }
+        await openSettings(ctx.ui, () => ({ enabled: isAdvisorEnabled(key), enforced: planningEnforced(key), mode: executionMode(key),
+          source: advisorSource(), model: advisorSelector(), limit: config.maxConsultationsPerSession, timeout: config.advisorTimeoutMs ?? 120000 }), {
+          change(patch) {
+            if (patch.enabled !== undefined) { gateOnBySession.set(key, patch.enabled); if (patch.enabled) ensureConfigTerms(key); }
+            if (patch.enforced !== undefined) { planningOverrides.set(key, patch.enforced); if (patch.enforced) planningGate.begin(key); else planningGate.clear(key); }
+            if (patch.mode) executionModeOverrides.set(key, patch.mode);
+            if (patch.source) sourceOverride = patch.source;
+            if (patch.model) advisorModelOverride = patch.model;
+            if ("limit" in patch) config.maxConsultationsPerSession = patch.limit;
+            if (patch.timeout !== undefined) config.advisorTimeoutMs = patch.timeout;
+          },
+          ompModels: () => [...new Set(ctx.modelRegistry.getAvailable().map(m => `${m.provider}/${m.id}`))],
+          async provider() {
+            const result = await editProvider(ctx.ui, config.providers ?? {}, splitSelector(advisorSelector()).provider);
+            if (result) config.providers = { ...config.providers, [result.alias]: result.provider };
+          },
+          save() {
+            saveSettings(CONFIG_PATH, { enabledByDefault: isAdvisorEnabled(key), enforcePlanning: planningEnforced(key), executionMode: executionMode(key),
+              advisorSource: advisorSource(), advisorModel: advisorSelector(), advisorTimeoutMs: config.advisorTimeoutMs ?? 120000,
+              maxConsultationsPerSession: config.maxConsultationsPerSession, providers: config.providers });
+            config = loadConfig();
+            persistGates();
+          },
+        });
+        return;
+      }
+      if (argNorm === "mode local-led" || argNorm === "mode cloud-led") {
+        executionModeOverrides.set(key, argNorm === "mode cloud-led" ? "cloud-led" : "local-led");
+        ctx.ui.notify(`omni-advisor: workflow=${executionMode(key)}`, "info"); return;
+      }
       if (argNorm === "planning on" || argNorm === "planning off") {
         const enforce = argNorm === "planning on";
         planningOverrides.set(key, enforce);
@@ -681,7 +723,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       const on = isAdvisorEnabled(key);
       const def = config.enabledByDefault === true;
       ctx.ui.notify(
-        `omni-advisor: pipeline ${on ? "enabled" : "disabled"}; default=${def ? "enabled" : "disabled"}; advisor=${advisorSelector()} source=${advisorSource()} enforcedPlanning=${planningEnforced(key)} (isolated dispatch)`,
+        `omni-advisor: pipeline ${on ? "enabled" : "disabled"}; default=${def ? "enabled" : "disabled"}; advisor=${advisorSelector()} source=${advisorSource()} mode=${executionMode(key)} enforcedPlanning=${planningEnforced(key)} (isolated dispatch)`,
         "info",
       );
     },
