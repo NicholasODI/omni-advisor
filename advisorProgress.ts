@@ -5,7 +5,7 @@ export interface ProgressUpdate {
   details: { status: string; elapsedSeconds: number };
 }
 export function startAdvisorProgress(update?: (value: ProgressUpdate) => void, signal?: AbortSignal,
-  clock = Date.now, intervalMs = 5000) {
+  clock = Date.now, intervalMs = 1000) {
   const started = clock();
   let stopped = false;
   let current: 'waiting' | AdvisorPhase = 'waiting';
@@ -33,4 +33,17 @@ export function startAdvisorProgress(update?: (value: ProgressUpdate) => void, s
     if (value === current || stopped) return;
     current = value; emit(current, label());
   } };
+}
+
+/** Theme styling stays in the local footer; tool transcripts remain plain text. */
+export const phaseColors: Record<string, 'muted' | 'accent' | 'warning' | 'success' | 'error'> = {
+  waiting: 'muted', thinking: 'warning', answering: 'accent', completed: 'success', failed: 'error', cancelled: 'warning',
+};
+export function updateAdvisorFooter(ui: {
+  setStatus?: (key: string, text: string | undefined) => void;
+  theme?: { fg: (color: any, text: string) => string };
+} | undefined, update: ProgressUpdate): void {
+  const label = `Advisor: ${update.details.status} (${update.details.elapsedSeconds}s)`;
+  try { ui?.setStatus?.('omni-advisor', ui.theme?.fg(phaseColors[update.details.status] ?? 'muted', label) ?? label); }
+  catch { /* A missing theme/footer must not affect completion. */ }
 }

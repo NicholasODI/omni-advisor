@@ -103,7 +103,7 @@ Compaction in the same running session preserves the current planning approval a
 
 ## Consultation progress
 
-`ask_advisor` emits local tool-progress updates through OMP's update callback: after brief validation, every five seconds while awaiting completion, and on completion/failure/cancellation. Waiting time includes provider authentication, network latency, and model processing; the extension cannot distinguish those phases or report a completion percentage. Updates contain elapsed time and status only, never briefs, credentials, or partial model output. This works with configured endpoints and OMP-backed advisors with provider streaming where supported. Display depends on the OMP client's tool-progress rendering. Test with `node test-advisor-progress.ts`.
+`ask_advisor` emits local tool-progress updates through OMP's update callback: after brief validation, every second while awaiting completion, and on completion/failure/cancellation. Waiting time includes provider authentication, network latency, and model processing; the extension cannot distinguish those phases or report a completion percentage. Updates contain elapsed time and status only, never briefs, credentials, or partial model output. This works with configured endpoints and OMP-backed advisors with provider streaming where supported. Display depends on the OMP client's tool-progress rendering. Test with `node test-advisor-progress.ts`.
 
 
 ### Provider phase status
@@ -118,3 +118,6 @@ For a configured endpoint that rejects streaming or `stream_options`, set `"stre
 Three reported command/evaluation errors (even with reads or edits between them), or three reported edit/write errors targeting the same file, produce one recovery hint per task. It asks the local model to consult once about whether to continue, simplify verification, or stop. The advisor is instructed to distinguish product defects from harness defects and give one next action with a stopping condition. User testing scope takes precedence; manual browser verification should not be replaced with a homemade browser simulator.
 
 There are no new tools or configuration steps. Cloud-off and limits still apply; no request is sent automatically. The hint survives compaction and resets for a new task. Detection uses host-reported tool errors, so a command that reports failed assertions but exits successfully can evade it; the local prompt also instructs self-reassessment. This is a bounded intervention, not a guarantee that a model will obey or that every failure belongs to the same underlying cause. Test: `node test-recovery.ts`.
+
+
+Progress refreshes locally once per second (no additional cloud requests). In OMP's standard footer, waiting is muted, thinking is warning-colored, answering uses the accent color, completion uses success, failure uses error, and cancellation uses warning. Exact hues follow your OMP theme. Tool update text remains plain for transcripts/RPC clients. Missing footer/theme support falls back to the regular tool updates. The footer shows the last terminal status until the next consultation or session shutdown.

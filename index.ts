@@ -51,7 +51,7 @@ import {
   type GatewayUsageReport,
 } from "./gateway.ts";
 import { dispatchIsolatedAdvisor, splitSelector, type ProviderConfig } from "./advisorDispatch.ts";
-import { startAdvisorProgress } from "./advisorProgress.ts";
+import { startAdvisorProgress, updateAdvisorFooter } from "./advisorProgress.ts";
 import { RecoveryGuard, recoveryHint } from "./recovery.ts";
 import { SessionMetrics } from "./sessionMetrics.ts";
 import { PlanningGate, enforcedPlanningPrompt } from "./planningGate.ts";
@@ -346,7 +346,10 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         consultationCounts.set(key, (consultationCounts.get(key) ?? 0) + 1);
         const safeFocus = focus ? cipher.mask(focus, key) : undefined;
         const dispatchStarted = Date.now();
-        const progress = startAdvisorProgress(_onUpdate, _signal);
+        const progress = startAdvisorProgress(update => {
+          updateAdvisorFooter(ctx.ui, update);
+          _onUpdate?.(update);
+        }, _signal);
         let result;
         try {
           result = advisorSource() === "omp"
@@ -561,6 +564,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       "SESSION_END",
       `session closed: in=${tot.input} out=${tot.output} cacheR=${tot.cacheRead} msgs=${tot.messages} cost=unknown`,
     );
+    try { ctx.ui?.setStatus?.("omni-advisor", undefined); } catch { /* optional UI */ }
     gateOnBySession.delete(key);
     planningGate.clear(key);
     planningOverrides.delete(key);
