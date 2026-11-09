@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { validateBrief, assertAbstract } from './planning.ts';
-import { dispatchIsolatedAdvisor } from './advisorDispatch.ts';
-import { dispatchOmpAdvisor } from './ompAdvisor.ts';
-import { mask, registerTerms, clearSession } from './cipher.ts';
-import { LOG_DIR, safeSessionId } from './logger.ts';
-import { executionInstructions } from './executionMode.ts';
-import { advisorBlock, toolResponseFrame } from './cloudAdvisor.ts';
+import { validateBrief, assertAbstract } from '../planning.ts';
+import { dispatchIsolatedAdvisor } from '../advisorDispatch.ts';
+import { dispatchOmpAdvisor } from '../ompAdvisor.ts';
+import { mask, registerTerms, clearSession } from '../cipher.ts';
+import { LOG_DIR, safeSessionId } from '../logger.ts';
+import { executionInstructions } from '../executionMode.ts';
+import { advisorBlock, toolResponseFrame } from '../cloudAdvisor.ts';
 const brief = { purpose:'decision' as const, objective:'Choose an event-processing design', questions:'Which retry approach preserves ordering?',
   components:'Component A consumes events and updates store B; component C reads B.',
   invariants:'One effect per event; a cancelled handler retains its slot until it exits.',

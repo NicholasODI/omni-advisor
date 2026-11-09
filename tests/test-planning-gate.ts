@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { PlanningGate } from './planningGate.ts';
-import extension from './index.ts';
+import { PlanningGate } from '../planningGate.ts';
+import extension from '../index.ts';
 const gate = new PlanningGate();
 gate.begin('a');
 for (const tool of ['read', 'grep', 'glob', 'ls', 'find', 'ask_advisor', 'register_masked_terms']) assert.equal(gate.blocked('a', tool), false);

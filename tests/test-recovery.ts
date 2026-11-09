@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { RecoveryGuard } from './recovery.ts';
-import extension from './index.ts';
+import { RecoveryGuard } from '../recovery.ts';
+import extension from '../index.ts';
 const guard = new RecoveryGuard();
 assert.equal(guard.observe('eval',{},true),false);
 assert.equal(guard.observe('read',{path:'page'},false),false);
