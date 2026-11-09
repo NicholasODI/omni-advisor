@@ -22,7 +22,7 @@ Edit `omni-advisor.config.json`, then reload the extension:
 }
 ```
 
-Set key environment variables securely in the process launching OMP; never commit keys. The config stores variable **names**, not keys. Base URLs must be HTTPS without embedded credentials, query strings, or fragments. The adapter appends `/chat/completions` or `/messages`. Choose a model supported by your provider and this non-streaming text API. Native Anthropic uses `anthropic-version: 2023-06-01`. Model-specific reasoning APIs are not implemented.
+Set key environment variables securely in the process launching OMP; never commit keys. The config stores variable **names**, not keys. Base URLs must be HTTPS without embedded credentials, query strings, or fragments. The adapter appends `/chat/completions` or `/messages`. Choose a model supported by your provider and this text API. Native Anthropic uses `anthropic-version: 2023-06-01`. Model-specific reasoning APIs are not implemented.
 
 Switch with `/omni-advisor model claude/<model-id>` or `/omni-advisor model openrouter/<vendor>/<model-id>`. Provider aliases are arbitrary. `OMNI_ADVISOR_MODEL` overrides the configured selector; the command override takes highest precedence. `OMNI_ADVISOR_FOCUS` overrides focus. Without an explicit provider entry, legacy provider discovery from `~/.omp/agent/models.yml` remains available. Autocomplete and optional quota lookup use legacy providers only.
 
@@ -103,4 +103,11 @@ Compaction in the same running session preserves the current planning approval a
 
 ## Consultation progress
 
-`ask_advisor` emits local tool-progress updates through OMP's update callback: after brief validation, every five seconds while awaiting completion, and on completion/failure/cancellation. Waiting time includes provider authentication, network latency, and model processing; the extension cannot distinguish those phases or report a completion percentage. Updates contain elapsed time and status only, never briefs, credentials, or partial model output. This works with configured endpoints and OMP-backed advisors without enabling provider token streaming. Display depends on the OMP client's tool-progress rendering. Test with `node test-advisor-progress.ts`.
+`ask_advisor` emits local tool-progress updates through OMP's update callback: after brief validation, every five seconds while awaiting completion, and on completion/failure/cancellation. Waiting time includes provider authentication, network latency, and model processing; the extension cannot distinguish those phases or report a completion percentage. Updates contain elapsed time and status only, never briefs, credentials, or partial model output. This works with configured endpoints and OMP-backed advisors with provider streaming where supported. Display depends on the OMP client's tool-progress rendering. Test with `node test-advisor-progress.ts`.
+
+
+### Provider phase status
+
+Configured OpenAI-compatible/Anthropic endpoints now request streaming for progress. OMP mode consumes its provider stream events. The UI shows **thinking** only when a provider emits a reasoning/thinking event and **answering** when answer text begins. It otherwise remains waiting; silent processing is never labeled thinking by elapsed time alone. Heartbeats retain the last observed phase. No reasoning content or partial answer text is shown in progress updates; the completed text plan is returned at the end. Failed, truncated, or incomplete streams do not unlock execution.
+
+For a configured endpoint that rejects streaming or `stream_options`, set `"stream": false` in its provider entry to use buffered completion with waiting/elapsed-time updates. There is no automatic retry that could duplicate a charged request. OMP streaming support depends on its installed provider adapter. Provider phase signals do not enable reasoning on models that have it disabled. Tests: `node test-advisor-stream.ts`.

@@ -344,8 +344,8 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         let result;
         try {
           result = advisorSource() === "omp"
-            ? await dispatchOmpAdvisor(ctx.modelRegistry, sel, masked, config.advisorTimeoutMs, safeFocus, _signal)
-            : await dispatchIsolatedAdvisor(sel, masked, config.advisorTimeoutMs, safeFocus, config.providers, _signal);
+            ? await dispatchOmpAdvisor(ctx.modelRegistry, sel, masked, config.advisorTimeoutMs, safeFocus, _signal, undefined, progress.phase)
+            : await dispatchIsolatedAdvisor(sel, masked, config.advisorTimeoutMs, safeFocus, config.providers, _signal, progress.phase);
           progress.stop(_signal?.aborted ? "cancelled" : result.ok ? "completed" : "failed");
         } finally {
           progress.stop(_signal?.aborted ? "cancelled" : "failed");

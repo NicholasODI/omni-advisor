@@ -1,3 +1,4 @@
+import { readAdvisorStream, type AdvisorPhase } from './advisorStream.ts';
 import { advisorBlock, advisoryFrame } from './cloudAdvisor.ts';
 import { loadProvider } from './gateway.ts';
 import { assertAbstract } from './planning.ts';
@@ -6,6 +7,7 @@ export interface ProviderConfig {
   api: 'openai' | 'anthropic';
   apiKeyEnv?: string;
   maxOutputTokens?: number;
+  stream?: boolean;
 }
 export interface AdvisorDispatchResult {
   ok: boolean; text?: string; error?: string;
@@ -16,7 +18,7 @@ export function splitSelector(selector: string): { provider: string; model: stri
   return i < 0 ? { provider: '', model: selector } : { provider: selector.slice(0, i), model: selector.slice(i + 1) };
 }
 export async function dispatchIsolatedAdvisor(selector: string, query: string, timeoutMs = 120000, focus?: string,
-  providers?: Record<string, ProviderConfig>, signal?: AbortSignal): Promise<AdvisorDispatchResult> {
+  providers?: Record<string, ProviderConfig>, signal?: AbortSignal, onPhase?: (phase: AdvisorPhase) => void): Promise<AdvisorDispatchResult> {
   try {
     assertAbstract(query);
     if (focus) assertAbstract(focus);
@@ -42,11 +44,14 @@ export async function dispatchIsolatedAdvisor(selector: string, query: string, t
     const body = api === 'anthropic'
       ? { model, max_tokens: tokens, system, messages }
       : { model, max_tokens: tokens, messages: [{ role: 'system', content: system }, ...messages] };
+    const streaming = !!onPhase && configured?.stream !== false;
+    const payload = streaming ? { ...body, stream: true, ...(api === 'openai' ? { stream_options: { include_usage: true } } : {}) } : body;
     const res = await fetch(base.href.replace(/\/$/, '') + (api === 'anthropic' ? '/messages' : '/chat/completions'), {
-      method: 'POST', headers, body: JSON.stringify(body), redirect: 'error',
+      method: 'POST', headers, body: JSON.stringify(payload), redirect: 'error',
       signal: AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(signal ? [signal] : [])]),
     });
     if (!res.ok) { await res.body?.cancel(); throw new Error(`Provider returned HTTP ${res.status}.`); }
+    if (res.headers.get('content-type')?.includes('text/event-stream')) return await readAdvisorStream(res, api, onPhase);
     const reader = res.body?.getReader();
     if (!reader) throw new Error('Empty provider response.');
     const chunks: Uint8Array[] = []; let size = 0;
