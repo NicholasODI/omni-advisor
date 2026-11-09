@@ -252,6 +252,9 @@ function collectSpans(text: string, s: SessionCipher): Span[] {
         p.re.lastIndex++;
         continue;
       }
+      // Mixed-case/digit evidence avoids treating slash-separated state names as secrets.
+      // Explicit credential assignments and registered terms remain separate safeguards.
+      if (p.type === "B64" && !(/[A-Z]/.test(match[0]) && /[a-z]/.test(match[0]) && /[0-9]/.test(match[0]))) continue;
       if (placeholders.some((pp) => match.index < pp.end && match.index + match[0].length > pp.start)) continue;
       candidates.push({ start: match.index, end: match.index + match[0].length, raw: match[0], type: p.type });
     }

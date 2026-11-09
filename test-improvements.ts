@@ -1,0 +1,28 @@
+import assert from 'node:assert/strict';
+import { mask, clearSession } from './cipher.ts';
+import { validateBrief, planningText } from './planning.ts';
+import { SessionMetrics } from './sessionMetrics.ts';
+import extension from './index.ts';
+const sid = 'improvement-regression';
+const states = 'queued/running/succeeded/failed/cancelled';
+assert.equal(mask(states, sid), states);
+for (const secret of ['AbCdEfGhIjKlMnOpQrStUvWxYz0123456789ABCD12', 'sk-0123456789abcdefghijklmnop']) assert.notEqual(mask(secret, sid), secret);
+assert.throws(() => validateBrief({ objective: 'Plan worker', questions: 'password=FAKE_ONLY' }), /field questions: credential assignment/);
+try { validateBrief({ objective: 'password=FAKE_ONLY', questions: 'Which strategy?' }); } catch (e) { assert.equal(String(e).includes('FAKE_ONLY'), false); }
+assert.equal(planningText({ objective: 'Worker', questions: 'Why?', i: 'host intent metadata' } as any).includes('host intent'), false);
+const metrics = new SessionMetrics(); metrics.begin(100); metrics.toolStart('a', 120); metrics.toolEnd('a','read',false,140); metrics.result(true,30,{input:20,output:10}); metrics.result(false,5); metrics.blocked++; metrics.end(200);
+assert.deepEqual([metrics.snapshot().agentWallMs, metrics.snapshot().cumulativeToolMs, metrics.snapshot().cloudLatencyMs], [100,20,35]);
+assert.equal(metrics.snapshot().locallyBlocked,1); assert.equal(metrics.snapshot().responsesWithoutUsage,1);
+for (let i=0;i<3;i++) assert.equal(metrics.toolEnd(String(i),'bash',true),i===2);
+const tools: any = {}, hooks: any = {};
+const schema: any = new Proxy(() => schema,{get:()=>schema,apply:()=>schema});
+extension({ zod:schema, registerTool:(t:any)=>tools[t.name]=t, registerCommand:()=>{}, on:(n:string,f:any)=>hooks[n]=f } as any);
+const ctx:any={sessionManager:{getSessionFile:()=>'/improvements/test'}};
+let status = await tools.advisor_status.execute('',{},undefined,undefined,ctx);
+assert.equal(status.details.maxConsultationsPerSession,null); assert.equal(status.details.measurements.cost,'unknown');
+const checklist=await tools.advisor_checklist.execute('',{items:[{id:'R1',requirement:'Idle is truthful',status:'passed'}]},undefined,undefined,ctx);
+assert.equal(checklist.details.complete,false); assert.equal(checklist.details.items[0].status,'unverified');
+await hooks.before_agent_start({reason:'prompt',systemPrompt:[]},ctx);
+assert.equal((await tools.advisor_checklist.execute('',{},undefined,undefined,ctx)).details.items.length,0);
+clearSession(sid);
+console.log('Improvement regressions passed: masking, privacy, metadata allowlist, timing, accounting, recovery, unlimited default, status, checklist.');

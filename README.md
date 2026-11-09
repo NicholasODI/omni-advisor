@@ -11,7 +11,6 @@ Edit `omni-advisor.config.json`, then reload the extension:
   "enabledByDefault": false,
   "advisorModel": "openai/gpt-4.1",
   "advisorTimeoutMs": 120000,
-  "maxConsultationsPerSession": 3,
   "providers": {
     "openai": { "baseUrl": "https://api.openai.com/v1", "api": "openai", "apiKeyEnv": "ADVISOR_OPENAI_KEY" },
     "claude": { "baseUrl": "https://api.anthropic.com/v1", "api": "anthropic", "apiKeyEnv": "ADVISOR_ANTHROPIC_KEY", "maxOutputTokens": 4096 },
@@ -31,7 +30,7 @@ Switch with `/omni-advisor model claude/<model-id>` or `/omni-advisor model open
 
 Enable cloud consultation with `/omni-advisor on`; `/omni-advisor off` blocks consultation requests. Disabled is the default.
 
-`ask_advisor` accepts `objective`, `questions`, and optional `stack`, `components`, `constraints`, `facts`, `previousPlan`. Describe architecture and behavior using public technical terms and synthetic examples. The combined brief is limited to 12000 characters. Keep the plan locally, execute with local tools, and verify every step. The default budget is three attempted dispatches per session/process; restarting resets it. Only one consultation per session may be pending. Failed dispatch attempts also consume budget to avoid expensive loops.
+`ask_advisor` accepts `objective`, `questions`, and optional `stack`, `components`, `constraints`, `facts`, `previousPlan`. Describe architecture and behavior using public technical terms and synthetic examples. The combined brief is limited to 12000 characters. Keep the plan locally, execute with local tools, and verify every step. There is no consultation-count limit by default. Optionally set `maxConsultationsPerSession` to a positive integer; the attempted-dispatch count resets on process restart. Only one consultation per session may be pending. Failed dispatch attempts also consume budget to avoid expensive loops.
 
 Cloud responses retain placeholders and are untrusted guidance, never executable authority. The extension forwards cancellation, bounds time/output, rejects redirects, and records provider-reported advisor token usage. Missing prices remain unpriced; displayed zero does not establish free usage.
 
@@ -71,10 +70,23 @@ Set `"enforcePlanning": true` in the configuration and reload OMP, or run:
 /omni-advisor planning on
 ```
 
-For each new user prompt, execution tools are blocked until `ask_advisor` successfully returns a plan. The local model is instructed to inspect locally, prepare an abstract brief, and consult before executing. Only `read`, `grep`, `glob`, `ls`, `find`, `register_masked_terms`, and `ask_advisor` are allowed before planning. Shell and delegation are deliberately blocked because they can modify state. Custom discovery tools are blocked too. Successful advice unlocks execution only for the current prompt; stale results from an older prompt cannot unlock a newer one.
+For each new user prompt, execution tools are blocked until `ask_advisor` successfully returns a plan. The local model is instructed to inspect locally, prepare an abstract brief, and consult before executing. Only `read`, `grep`, `glob`, `ls`, `find`, `advisor_status`, `advisor_checklist`, `register_masked_terms`, and `ask_advisor` are allowed before planning. Shell and delegation are deliberately blocked because they can modify state. Custom discovery tools are blocked too. Successful advice unlocks execution only for the current prompt; stale results from an older prompt cannot unlock a newer one.
 
 Cloud enablement is separate: enforcement never turns cloud access on or forwards your prompt automatically. Privacy rejection, missing credentials, cancellation, and exhausted consultation budget do not unlock execution. Use `/omni-advisor planning off` to explicitly continue locally when blocked. Runtime enforcement overrides are session-scoped. `/omni-advisor status` shows enforcement state.
 
-This opt-in mode gates tools for every user prompt, rather than guessing which tasks are nontrivial. Pure conversational replies do not require a consultation. Multi-prompt workflows may need a higher `maxConsultationsPerSession` than the default three. Enforcement depends on OMP's `tool_call` hook and cannot guarantee that the model produces a high-quality abstract brief; existing heuristic privacy limitations still apply.
+This opt-in mode gates tools for every user prompt, rather than guessing which tasks are nontrivial. Pure conversational replies do not require a consultation. Any configured `maxConsultationsPerSession` must cover the intended multi-prompt workflow. Enforcement depends on OMP's `tool_call` hook and cannot guarantee that the model produces a high-quality abstract brief; existing heuristic privacy limitations still apply.
 
 Test: `node test-planning-gate.ts`.
+
+
+## Local diagnostics and execution evidence
+
+`advisor_status` returns actual extension settings, provider configuration readiness (not a connectivity guarantee), pending planning state, optional count limit (`null` means unlimited), and current-process session measurements. It never refreshes authentication or makes a network call. It reports no API keys or endpoint URLs. Use this tool instead of inferring settings from OMP's unrelated `cfg://advisor` feature.
+
+`advisor_checklist` stores up to 50 compact requirement IDs, requirements, statuses, and evidence references locally in memory. Omit `items` to inspect it; supplying items replaces the checklist. A passed item without evidence becomes unverified. Checklists reset on each user prompt and are never automatically dispatched. This is self-reported evidence, not an independent correctness proof. The local prompt requires reconciling requirements, tests, and contradictions before claiming completion.
+
+Metrics separate successful and failed consultation attempts from locally blocked calls, provider-reported cloud tokens, missing usage reports, cloud latency, cumulative tool duration, and agent wall time. Timings can overlap; agent wall time is not an inference-time estimate. Tool timing uses host tool-call/result hooks; no tool inputs or outputs are recorded by this instrumentation. Unknown provider prices are displayed as unknown. The third consecutive error for the same tool triggers a local recovery hint rather than an automatic cloud call.
+
+Privacy errors identify the brief field and category without echoing values. Base64 detection now requires mixed-case letters and digits to avoid masking slash-separated state names; explicit known credential patterns and registered terms remain active. This heuristic can still miss secrets: abstract sensitive details locally and register sensitive values rather than relying on entropy detection alone.
+
+Regression checks: `node test-improvements.ts`.
