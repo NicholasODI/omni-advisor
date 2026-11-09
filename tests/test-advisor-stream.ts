@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { readAdvisorStream } from './advisorStream.ts';
-import { dispatchOmpAdvisor } from './ompAdvisor.ts';
+import { readAdvisorStream } from '../advisorStream.ts';
+import { dispatchOmpAdvisor } from '../ompAdvisor.ts';
 const encode = (events: unknown[]) => events.map(e => `data: ${typeof e === 'string' ? e : JSON.stringify(e)}\r\n\r\n`).join('');
 function response(events: unknown[]) {
   const bytes = new TextEncoder().encode(encode(events));

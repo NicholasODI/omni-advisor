@@ -9,30 +9,30 @@ Node 24 is recommended; the standalone TypeScript tests require Node >=23.6 with
 Run each command from the repository root:
 
 ```sh
-node test-omni-masker.ts
-node test-planning.ts
-node test-planning-gate.ts
-node test-omp-advisor.ts
-node test-improvements.ts
-node test-advisor-progress.ts
-node test-advisor-stream.ts
-node test-recovery.ts
-node test-settings.ts
-node test-privacy-policy.ts
+node tests/test-omni-masker.ts
+node tests/test-planning.ts
+node tests/test-planning-gate.ts
+node tests/test-omp-advisor.ts
+node tests/test-improvements.ts
+node tests/test-advisor-progress.ts
+node tests/test-advisor-stream.ts
+node tests/test-recovery.ts
+node tests/test-settings.ts
+node tests/test-privacy-policy.ts
 ```
 
 | Suite | Focus |
 |---|---|
-| `test-omni-masker.ts` | Masking round trips, registration, logging, accounting, prompt basics |
-| `test-planning.ts` | Provider payloads, privacy boundary, HTTPS, usage, cancellation, cloud-off |
-| `test-planning-gate.ts` | Discovery/execution gating, stale results, task lifecycle, explicit opt-out |
-| `test-omp-advisor.ts` | Registry/auth reuse and isolated completion context |
-| `test-improvements.ts` | Technical-context preservation, diagnostics, metrics, checklist/compaction |
-| `test-advisor-progress.ts` | Heartbeats, terminal cleanup, cancellation, optional UI, theme colors |
-| `test-advisor-stream.ts` | SSE framing, phases, reasoning exclusion, usage, incomplete/truncated streams |
-| `test-recovery.ts` | Mixed-runner failures, same-file grouping, one hint per task, compaction |
-| `test-settings.ts` | Menu navigation, cancellation, provider validation, persistence, workflow prompts |
-| `test-privacy-policy.ts` | Structural context, sensitive input rejection before dispatch, memory-only mappings |
+| `tests/test-omni-masker.ts` | Masking round trips, registration, logging, accounting, prompt basics |
+| `tests/test-planning.ts` | Provider payloads, privacy boundary, HTTPS, usage, cancellation, cloud-off |
+| `tests/test-planning-gate.ts` | Discovery/execution gating, stale results, task lifecycle, explicit opt-out |
+| `tests/test-omp-advisor.ts` | Registry/auth reuse and isolated completion context |
+| `tests/test-improvements.ts` | Technical-context preservation, diagnostics, metrics, checklist/compaction |
+| `tests/test-advisor-progress.ts` | Heartbeats, terminal cleanup, cancellation, optional UI, theme colors |
+| `tests/test-advisor-stream.ts` | SSE framing, phases, reasoning exclusion, usage, incomplete/truncated streams |
+| `tests/test-recovery.ts` | Mixed-runner failures, same-file grouping, one hint per task, compaction |
+| `tests/test-settings.ts` | Menu navigation, cancellation, provider validation, persistence, workflow prompts |
+| `tests/test-privacy-policy.ts` | Structural context, sensitive input rejection before dispatch, memory-only mappings |
 
 Tests may write logs under the normal `~/.omp/agent/extensions/omni-advisor/logs` directory. A workspace-only sandbox may require approved access to that user directory. Do not change application behavior to make a sandbox permission failure pass.
 

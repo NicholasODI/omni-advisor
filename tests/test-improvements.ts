@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
-import { mask, clearSession } from './cipher.ts';
-import { validateBrief, planningText } from './planning.ts';
-import { SessionMetrics } from './sessionMetrics.ts';
-import extension from './index.ts';
+import { mask, clearSession } from '../cipher.ts';
+import { validateBrief, planningText } from '../planning.ts';
+import { SessionMetrics } from '../sessionMetrics.ts';
+import extension from '../index.ts';
 const sid = 'improvement-regression';
 const states = 'queued/running/succeeded/failed/cancelled';
 assert.equal(mask(states, sid), states);

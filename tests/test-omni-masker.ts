@@ -1,7 +1,7 @@
 // test-omni-masker — self-contained smoke test for the omni-advisor cipher
 // and supporting modules.
 //
-// Run with:  node test-omni-masker.ts   (Node >= 23.6, type stripping)
+// Run with:  node tests/test-omni-masker.ts   (Node >= 23.6, type stripping)
 //
 // Verifies:
 //   1. Deterministic spans (emails, vendor keys, JWT, UUID, hex, home
@@ -19,12 +19,12 @@
 //  10. Prompt framing and selector splitting behave.
 
 import { existsSync, readFileSync } from "node:fs";
-import * as cipher from "./cipher.ts";
-import * as usage from "./usageTracker.ts";
-import { loadProvider } from "./gateway.ts";
-import { executorNudge, advisorBlock, advisoryFrame, toolResponseFrame } from "./cloudAdvisor.ts";
-import { splitSelector } from "./advisorDispatch.ts";
-import { LOG_DIR, log, logPath, safeSessionId } from "./logger.ts";
+import * as cipher from "../cipher.ts";
+import * as usage from "../usageTracker.ts";
+import { loadProvider } from "../gateway.ts";
+import { executorNudge, advisorBlock, advisoryFrame, toolResponseFrame } from "../cloudAdvisor.ts";
+import { splitSelector } from "../advisorDispatch.ts";
+import { LOG_DIR, log, logPath, safeSessionId } from "../logger.ts";
 
 const SID = "omni-masker-smoke";
 
