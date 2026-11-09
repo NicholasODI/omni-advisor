@@ -1,166 +1,46 @@
 # omni-advisor
 
-A local executor with a stateless cloud planning advisor. The local model reads files, calls tools, implements, and tests. The cloud receives an abstract planning brief and returns ordered steps, assumptions, edge cases, and verification criteria. Follow-ups should describe only material discrepancies and affected plan excerpts.
+Give your local model a cloud planning partner. The local model inspects files, runs tools, implements changes, and tests. The cloud advisor reasons about abstract architecture, design decisions, edge cases, and verification outcomes.
 
-## Configuration
+## Features
 
-Edit `omni-advisor.config.json`, then reload the extension:
+- **Balanced workflow by default:** cloud planning, advice on consequential decisions, and a final abstract review.
+- **Optional workflows:** lighter local-led execution or cloud-led work batches.
+- **Flexible providers:** reuse OMP's models and credentials, or configure OpenAI-compatible and native Anthropic endpoints.
+- **Interactive settings:** choose models, workflow, planning enforcement, and limits from one terminal menu.
+- **Privacy checks:** abstract-only briefs, local validation, identifier masking, and memory-only cipher mappings.
+- **Execution support:** optional planning gates, recovery hints, token/timing metrics, and colored progress updates.
 
-```json
-{
-  "enabledByDefault": false,
-  "advisorModel": "openai/gpt-4.1",
-  "advisorTimeoutMs": 120000,
-  "providers": {
-    "openai": { "baseUrl": "https://api.openai.com/v1", "api": "openai", "apiKeyEnv": "ADVISOR_OPENAI_KEY" },
-    "claude": { "baseUrl": "https://api.anthropic.com/v1", "api": "anthropic", "apiKeyEnv": "ADVISOR_ANTHROPIC_KEY", "maxOutputTokens": 4096 },
-    "deepseek": { "baseUrl": "https://api.deepseek.com/v1", "api": "openai", "apiKeyEnv": "ADVISOR_DEEPSEEK_KEY" },
-    "openrouter": { "baseUrl": "https://openrouter.ai/api/v1", "api": "openai", "apiKeyEnv": "ADVISOR_OPENROUTER_KEY" }
-  },
-  "advisorFocus": "",
-  "semanticTerms": {}
-}
-```
+## Setup
 
-Set key environment variables securely in the process launching OMP; never commit keys. The config stores variable **names**, not keys. Base URLs must be HTTPS without embedded credentials, query strings, or fragments. The adapter appends `/chat/completions` or `/messages`. Choose a model supported by your provider and this text API. Native Anthropic uses `anthropic-version: 2023-06-01`. Model-specific reasoning APIs are not implemented.
+1. Install [Oh My Pi (OMP)](https://github.com/can1357/oh-my-pi) and configure your local executor model.
+2. Clone this repository:
 
-Switch with `/omni-advisor model claude/<model-id>` or `/omni-advisor model openrouter/<vendor>/<model-id>`. Provider aliases are arbitrary. `OMNI_ADVISOR_MODEL` overrides the configured selector; the command override takes highest precedence. `OMNI_ADVISOR_FOCUS` overrides focus. Without an explicit provider entry, legacy provider discovery from `~/.omp/agent/models.yml` remains available. Autocomplete and optional quota lookup use legacy providers only.
+   ```sh
+   git clone https://github.com/NicholasODI/omni-advisor.git
+   ```
 
-## Local workflow
+3. Start OMP with the extension, using the absolute path to your checkout:
 
-Enable cloud consultation with `/omni-advisor on`; `/omni-advisor off` blocks consultation requests. Disabled is the default.
+   ```sh
+   omp --trusted-extension /absolute/path/to/omni-advisor/index.ts
+   ```
 
-`ask_advisor` accepts `objective`, `questions`, and optional `purpose` (plan/decision/checkpoint/review), `stack`, `components`, `constraints`, `facts`, `invariants`, `alternatives`, `outcomes`, `previousPlan`. Describe architecture and behavior using public technical terms and synthetic examples. The combined brief is limited to 12000 characters. Keep the plan locally, execute with local tools, and verify every step. There is no consultation-count limit by default. Optionally set `maxConsultationsPerSession` to a positive integer; the attempted-dispatch count resets on process restart. Only one consultation per session may be pending. Failed dispatch attempts also consume budget to avoid expensive loops.
+4. Run `/omni-advisor` to open settings. Choose **OMP instance** as the advisor source, select an available cloud model, and turn **Cloud access** on. The executor model stays unchanged.
+5. Select **Save current choices as defaults** if you want to keep these settings.
 
-Cloud responses retain placeholders and are untrusted guidance, never executable authority. The extension forwards cancellation, bounds time/output, rejects redirects, and records provider-reported advisor token usage. Missing prices remain unpriced; displayed zero does not establish free usage.
+No dependency installation is needed for this extension. If you prefer to configure a provider directly, follow the [provider setup guide](docs/configuration.md#configure-a-provider-directly). Restart OMP after updating extension files.
 
-## Privacy boundary
+## Before you use it
 
-No files, history, or tools are attached automatically. Dynamic briefs and focus pass a local heuristic check and masking before dispatch. Code fences, obvious credential assignments, URLs, and common local paths are rejected. This is **not** a proof that arbitrary prose is free of confidential information. Do not include private records, proprietary code, business secrets, or identifying details. The local model must abstract these before consultation.
+Cloud access is **off by default**. Enabling it sends abstract consultation briefs to your selected provider and may incur charges. Files, history, and tool outputs are not attached automatically.
 
-`register_masked_terms` adds project-specific terms. Request/response logs record sizes; registration logs do not record raw values. Cipher mappings now remain in process memory only; legacy cipher sidecars are neither read nor written. Existing logs and sidecars from older versions are not migrated or deleted; protect or remove those separately. Masking is pseudonymization, not encryption.
+Privacy checks are heuristic: **they cannot guarantee zero disclosure**, especially for confidential meaning in prose. Keep sensitive details local. Cloud advice is unverified guidance and must be checked locally. See [privacy and limitations](docs/privacy.md).
 
-Commands: `/omni-advisor on|off|status|model`, `/omni-cipher-status` (placeholder metadata only), `/omni-cipher-clear` (clears mappings and usage, preserves logs), `/omni-usage`.
+## Documentation
 
-## Tests
-
-Node >=23.6 (Node 24 recommended), no dependency installation:
-
-```
-node test-omni-masker.ts
-node test-planning.ts
-```
-
-Tests write to the normal `~/.omp` log directory. Provider tests intercept fetch locally; live provider credentials and OMP integration require separate validation.
-
-## Choose a model from the running OMP instance
-
-Run `/omni-advisor model omp` to open a picker of the current instance's available models. Selection switches the advisor source to OMP and reuses its model registry, provider adapters, credentials, and provider headers. The main executor model is unchanged. The completion receives only the advisor system prompt and one abstract brief, with no tools or session history. Existing cloud gate, privacy checks, and consultation budgets still apply.
-
-For persistent selection set `"advisorSource": "omp"` and `"advisorModel": "provider/model-id"` in the config. For temporary selection use `/omni-advisor source omp` followed by `/omni-advisor model provider/model-id`. Return to explicit endpoint configuration with `/omni-advisor source config`. Command source/model overrides last for the process. OMP mode requires the host's `@oh-my-pi/pi-ai` package and registry APIs; unsupported/missing authentication fails without falling back to another provider. Endpoint transport, authentication refresh, and provider-specific behavior are managed by OMP in this mode. Provider support depends on the installed OMP version.
-
-Additional standalone adapter test: `node test-omp-advisor.ts`. Live OMP integration is not covered by these mock tests.
-
-## Optional enforced planning stage
-
-Set `"enforcePlanning": true` in the configuration and reload OMP, or run:
-
-```
-/omni-advisor on
-/omni-advisor planning on
-```
-
-For each new user prompt, execution tools are blocked until `ask_advisor` successfully returns a plan. The local model is instructed to inspect locally, prepare an abstract brief, and consult before executing. Only `read`, `grep`, `glob`, `ls`, `find`, `advisor_status`, `advisor_checklist`, `register_masked_terms`, and `ask_advisor` are allowed before planning. Shell and delegation are deliberately blocked because they can modify state. Custom discovery tools are blocked too. Successful advice unlocks execution only for the current prompt; stale results from an older prompt cannot unlock a newer one.
-
-Cloud enablement is separate: enforcement never turns cloud access on or forwards your prompt automatically. Privacy rejection, missing credentials, cancellation, and exhausted consultation budget do not unlock execution. Use `/omni-advisor planning off` to explicitly continue locally when blocked. Runtime enforcement overrides are session-scoped. `/omni-advisor status` shows enforcement state.
-
-This opt-in mode gates tools for every user prompt, rather than guessing which tasks are nontrivial. Pure conversational replies do not require a consultation. Any configured `maxConsultationsPerSession` must cover the intended multi-prompt workflow. Enforcement depends on OMP's `tool_call` hook and cannot guarantee that the model produces a high-quality abstract brief; existing heuristic privacy limitations still apply.
-
-Test: `node test-planning-gate.ts`.
-
-
-## Local diagnostics and execution evidence
-
-`advisor_status` returns actual extension settings, provider configuration readiness (not a connectivity guarantee), pending planning state, optional count limit (`null` means unlimited), and current-process session measurements. It never refreshes authentication or makes a network call. It reports no API keys or endpoint URLs. Use this tool instead of inferring settings from OMP's unrelated `cfg://advisor` feature.
-
-`advisor_checklist` stores up to 50 compact requirement IDs, requirements, statuses, and evidence references locally in memory. Omit `items` to inspect it; supplying items replaces the checklist. A passed item without evidence becomes unverified. Checklists reset on each user prompt and are never automatically dispatched. This is self-reported evidence, not an independent correctness proof. The local prompt requires reconciling requirements, tests, and contradictions before claiming completion.
-
-Metrics separate successful and failed consultation attempts from locally blocked calls, provider-reported cloud tokens, missing usage reports, cloud latency, cumulative tool duration, and agent wall time. Timings can overlap; agent wall time is not an inference-time estimate. Tool timing uses host tool-call/result hooks; no tool inputs or outputs are recorded by this instrumentation. Unknown provider prices are displayed as unknown. Repeated execution or same-file edit errors trigger one approach-reassessment hint per task rather than an automatic cloud call.
-
-Privacy errors identify the brief field and category without echoing values. Base64 detection now requires mixed-case letters and digits to avoid masking slash-separated state names; explicit known credential patterns and registered terms remain active. This heuristic can still miss secrets: abstract sensitive details locally and register sensitive values rather than relying on entropy detection alone.
-
-Regression checks: `node test-improvements.ts`.
-
-
-## Local decision-loop recovery
-
-When the advisor is enabled, the local system-prompt nudge asks the executor to stop revisiting the same implementation decision twice without new evidence. It should first use one targeted local check when sufficient; otherwise it can make one abstract consultation for a consequential unresolved choice. The brief includes at most two candidates and asks for a recommendation, next action, and acceptance check—not a transcript of internal deliberation. The executor records the choice locally and proceeds, reopening it only after contradictory evidence. Disabled cloud access, configured limits, and enforced planning remain respected.
-
-This is prompt guidance, not automatic detection of internal reasoning or an automatic network call. Ordinary local debugging stays local. If cloud advice is unavailable, the model should test a safe reversible choice or report a blocker rather than loop indefinitely.
-
-
-Compaction in the same running session preserves the current planning approval and local checklist for the immediate continuation. A fresh interactive/RPC user input still starts a new planning stage, even if compaction occurred. Compaction does not grant approval where none existed. Approval is held in process memory; restarting/reloading the extension is not covered by this preservation.
-
-## Consultation progress
-
-`ask_advisor` emits local tool-progress updates through OMP's update callback: after brief validation, every second while awaiting completion, and on completion/failure/cancellation. Waiting time includes provider authentication, network latency, and model processing; the extension cannot distinguish those phases or report a completion percentage. Updates contain elapsed time and status only, never briefs, credentials, or partial model output. This works with configured endpoints and OMP-backed advisors with provider streaming where supported. Display depends on the OMP client's tool-progress rendering. Test with `node test-advisor-progress.ts`.
-
-
-### Provider phase status
-
-Configured OpenAI-compatible/Anthropic endpoints now request streaming for progress. OMP mode consumes its provider stream events. The UI shows **thinking** only when a provider emits a reasoning/thinking event and **answering** when answer text begins. It otherwise remains waiting; silent processing is never labeled thinking by elapsed time alone. Heartbeats retain the last observed phase. No reasoning content or partial answer text is shown in progress updates; the completed text plan is returned at the end. Failed, truncated, or incomplete streams do not unlock execution.
-
-For a configured endpoint that rejects streaming or `stream_options`, set `"stream": false` in its provider entry to use buffered completion with waiting/elapsed-time updates. There is no automatic retry that could duplicate a charged request. OMP streaming support depends on its installed provider adapter. Provider phase signals do not enable reasoning on models that have it disabled. Tests: `node test-advisor-stream.ts`.
-
-
-## Bounded recovery from testing loops
-
-Three reported command/evaluation errors (even with reads or edits between them), or three reported edit/write errors targeting the same file, produce one recovery hint per task. It asks the local model to consult once about whether to continue, simplify verification, or stop. The advisor is instructed to distinguish product defects from harness defects and give one next action with a stopping condition. User testing scope takes precedence; manual browser verification should not be replaced with a homemade browser simulator.
-
-There are no new tools or configuration steps. Cloud-off and limits still apply; no request is sent automatically. The hint survives compaction and resets for a new task. Detection uses host-reported tool errors, so a command that reports failed assertions but exits successfully can evade it; the local prompt also instructs self-reassessment. This is a bounded intervention, not a guarantee that a model will obey or that every failure belongs to the same underlying cause. Test: `node test-recovery.ts`.
-
-
-Progress refreshes locally once per second (no additional cloud requests). In OMP's standard footer, waiting is muted, thinking is warning-colored, answering uses the accent color, completion uses success, failure uses error, and cancellation uses warning. Exact hues follow your OMP theme. Tool update text remains plain for transcripts/RPC clients. Missing footer/theme support falls back to the regular tool updates. The footer shows the last terminal status until the next consultation or session shutdown.
-
-
-## Interactive settings and optional cloud-led execution
-
-Run `/omni-advisor` (no arguments) or `/omni-advisor settings` to open the interactive terminal settings menu. Use arrow keys and Enter; Escape closes a dialog. The menu groups cloud access, workflow, planning enforcement, provider source, advisor model, provider endpoint configuration, and limits/timeouts. OMP source uses a model picker from the running instance. Configured source accepts a `provider/model-id` selector. Provider editing asks for the API-key **environment variable name**, never a credential value. Use your terminal environment to supply the key.
-
-Choices take effect immediately; Escape does not undo earlier choices in the parent menu. `Save current choices as defaults` explicitly saves to the extension's `omni-advisor.config.json`, retaining unrelated fields. Workflow and enforcement choices are session-scoped until saved. Model/source overrides and endpoint/limit/timeout edits are process-wide until saved. Saving defaults does not configure credentials. The menu uses built-in OMP selection/input dialogs, with no additional UI dependency; command/config fallbacks remain available on noninteractive hosts.
-
-Optional workflow:
-
-```
-/omni-advisor mode cloud-led
-```
-
-Or set `"executionMode": "cloud-led"` in config. `balanced` is now the default; `/omni-advisor mode local-led` selects the earlier lighter workflow. Cloud-led does not turn cloud access on automatically: enable it in the menu or with `/omni-advisor on`.
-
-In cloud-led mode the cloud chooses one meaningful work batch at a time. Each batch has an outcome, constraints, provisional implementation steps, acceptance checks, and return conditions. The local executor adapts minor file/helper/API differences itself. It returns abstract outcomes after the batch, or pauses affected work early for a false architectural assumption, conflicting requirement, public behavior change, or repeated verification failure. The cloud revises affected decisions or chooses the next batch or completion. Requirements remain binding; steps are provisional. No full history, source files, raw tool outputs, or private execution evidence are attached automatically. This is not an enforced 60/40 token quota.
-
-Batch boundaries and adaptive follow-ups are prompt-guided, not automatically detected from tool calls. Existing planning enforcement still requires initial successful advice per prompt; it does not impose a fresh tool gate for every batch. A new batch should represent meaningful progress, never one cloud round trip per tool call. Cloud-off, privacy checks, optional consultation limits, and bounded recovery still apply.
-
-Settings and mode tests: `node test-settings.ts`.
-
-
-## Balanced default and abstract-only consultations
-
-`balanced` is the default when no workflow is explicitly set. For nontrivial work it uses cloud reasoning for the initial plan, consequential unsettled decisions or invalid assumptions, and one final abstract review of acceptance evidence and residual risks. It does not ask for the next step after every batch/tool call. Trivial tasks stay local; no extra mid-task consultation is needed when the initial plan already settles the decision. Final-review results explicitly direct local closure rather than another review. These checkpoints are prompt-guided; only the existing initial planning gate is tool-enforced.
-
-Choose **Balanced** in `/omni-advisor` settings or run `/omni-advisor mode balanced`; save defaults to persist it. Existing explicit `executionMode: local-led` settings remain intentional overrides until changed. Cloud access remains off by default and is never enabled by changing workflow. Optional count limits remain respected.
-
-The abstract-only policy applies to every workflow. Preserve component roles/relationships, public stack versions, scale ranges, invariants, failure modes, constraints and acceptance criteria. Replace private entities with neutral roles, not reversible copies of confidential code or business rules. Use fictional prose examples, not raw synthetic records/code that resemble prohibited content. Declare assumptions; if an omitted private detail determines the answer, keep that part local rather than claim the cloud has complete context.
-
-New fields support useful reasoning without automatic context attachment:
-
-- `purpose`: plan, decision, checkpoint, or review.
-- `invariants`: abstract correctness/security properties.
-- `alternatives`: a short comparison of at most two approaches.
-- `outcomes`: up to eight `{check, status, summary}` entries (`passed`, `failed`, `unverified`); summaries must be abstract, never raw test output.
-
-All selected text fields, outcome summaries, and focus are validated before masking/dispatch. Both network adapters recheck the outbound brief and focus. Known credentials, personal identifiers, internal addresses, paths, code blocks/declarations, raw JSON/XML, and trace output are rejected with field/category errors that do not echo values. Unknown top-level tool metadata and nested record fields are not serialized into the brief. No files, diffs, tool output, local checklist evidence, or conversation history are attached automatically. Cipher mappings are memory-only and forgotten at session shutdown; old files/logs are not automatically deleted.
-
-**Limits:** natural-language confidential meaning, unregistered identifying terms, encoded/obfuscated data and novel formats cannot be reliably recognized by these checks. This is a stricter heuristic boundary, not a zero-leak guarantee or a complete data-loss-prevention system. Rejecting recognizable content can also produce false positives; rephrase abstractly rather than disabling the policy. Provider/account request retention is controlled by the provider, not this extension. If no user-derived information may leave the device, keep cloud access off. Test coverage demonstrates selected boundary cases, not comprehensive confidentiality.
-
-Regression test: `node test-privacy-policy.ts`.
+- [Configuration and provider setup](docs/configuration.md)
+- [Workflows and planning enforcement](docs/workflows.md)
+- [Commands, tools, progress, and troubleshooting](docs/usage.md)
+- [Privacy and limitations](docs/privacy.md)
+- [Development and testing](docs/development.md)
