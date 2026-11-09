@@ -52,6 +52,7 @@ import {
 } from "./gateway.ts";
 import { dispatchIsolatedAdvisor, splitSelector, type ProviderConfig } from "./advisorDispatch.ts";
 import { startAdvisorProgress } from "./advisorProgress.ts";
+import { RecoveryGuard, recoveryHint } from "./recovery.ts";
 import { SessionMetrics } from "./sessionMetrics.ts";
 import { PlanningGate, enforcedPlanningPrompt } from "./planningGate.ts";
 import { dispatchOmpAdvisor } from "./ompAdvisor.ts";
@@ -240,6 +241,11 @@ function planningEnforced(key: string): boolean { return planningOverrides.get(k
 const compactedSessions = new Set<string>();
 const freshInputSessions = new Set<string>();
 const checklists = new Map<string, Array<{ id: string; requirement: string; status: string; evidence?: string }>>();
+const recoveryGuards = new Map<string, RecoveryGuard>();
+function recoveryGuard(key: string): RecoveryGuard {
+  if (!recoveryGuards.has(key)) recoveryGuards.set(key, new RecoveryGuard());
+  return recoveryGuards.get(key)!;
+}
 const metrics = new Map<string, SessionMetrics>();
 function sessionMetrics(key: string): SessionMetrics {
   if (!metrics.has(key)) metrics.set(key, new SessionMetrics());
@@ -499,6 +505,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     freshInputSessions.delete(key);
     if (event.reason !== "revive" && !compactionContinuation) {
       checklists.delete(key);
+      recoveryGuard(key).reset();
       if (enforced) planningGate.begin(key);
     }
     if (!isAdvisorEnabled(key) && !enforced) return;
@@ -513,8 +520,10 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     sessionMetrics(key).toolStart(event.toolCallId);
   });
   pi.on("tool_result", async (event, ctx) => {
-    if (sessionMetrics(sessionKey(ctx)).toolEnd(event.toolCallId, event.toolName, event.isError)) {
-      return { content: [...event.content, { type: "text", text: "Local recovery hint: three consecutive failures for this tool. Inspect the failure, isolate a minimal reproduction, and change the diagnosis before retrying. Do not automatically consult the cloud." }] };
+    const key = sessionKey(ctx);
+    sessionMetrics(key).toolEnd(event.toolCallId, event.toolName, event.isError);
+    if (recoveryGuard(key).observe(event.toolName, event.input ?? {}, event.isError)) {
+      return { content: [...event.content, { type: "text", text: recoveryHint }] };
     }
   });
   pi.on("agent_end", async (_event, ctx) => {
@@ -556,6 +565,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     planningGate.clear(key);
     planningOverrides.delete(key);
     metrics.delete(key);
+    recoveryGuards.delete(key);
     checklists.delete(key);
     compactedSessions.delete(key);
     freshInputSessions.delete(key);
