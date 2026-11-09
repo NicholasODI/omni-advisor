@@ -235,6 +235,9 @@ const gateOnBySession = loadGates();
 const planningGate = new PlanningGate();
 const planningOverrides = new Map<string, boolean>();
 function planningEnforced(key: string): boolean { return planningOverrides.get(key) ?? config.enforcePlanning === true; }
+// Compaction continuation is not a new task. Real user input takes precedence.
+const compactedSessions = new Set<string>();
+const freshInputSessions = new Set<string>();
 const checklists = new Map<string, Array<{ id: string; requirement: string; status: string; evidence?: string }>>();
 const metrics = new Map<string, SessionMetrics>();
 function sessionMetrics(key: string): SessionMetrics {
@@ -473,16 +476,25 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
   // executor nudge. The cloud advisor's own system prompt (advisorBlock) is
   // sent inside the isolated completion request, never here.
   // ---------------------------------------------------------------------
+  pi.on("input", async (event, ctx) => {
+    if (event.source !== "extension") freshInputSessions.add(sessionKey(ctx));
+  });
+  pi.on("session_compact", async (_event, ctx) => {
+    compactedSessions.add(sessionKey(ctx));
+  });
   pi.on("before_agent_start", async (event, ctx) => {
     const key = sessionKey(ctx);
     sessionMetrics(key).begin();
     const enforced = planningEnforced(key);
-    if (event.reason !== "revive") {
+    const compactionContinuation = compactedSessions.has(key) && !freshInputSessions.has(key);
+    compactedSessions.delete(key);
+    freshInputSessions.delete(key);
+    if (event.reason !== "revive" && !compactionContinuation) {
       checklists.delete(key);
       if (enforced) planningGate.begin(key);
     }
     if (!isAdvisorEnabled(key) && !enforced) return;
-    return { systemPrompt: [...event.systemPrompt, executorNudge(), ...(enforced ? [enforcedPlanningPrompt] : [])] };
+    return { systemPrompt: [...event.systemPrompt, executorNudge(), ...(enforced ? [enforcedPlanningPrompt, ...(planningGate.ready(key) ? ["A successful cloud plan is already approved for the current task. Continue local execution from the retained plan/checklist; compaction does not require another consultation."] : [])] : [])] };
   });
 
   pi.on("tool_call", async (event, ctx) => {
@@ -537,6 +549,8 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     planningOverrides.delete(key);
     metrics.delete(key);
     checklists.delete(key);
+    compactedSessions.delete(key);
+    freshInputSessions.delete(key);
   });
 
   // ---------------------------------------------------------------------

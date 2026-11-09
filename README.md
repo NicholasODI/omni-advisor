@@ -97,3 +97,6 @@ Regression checks: `node test-improvements.ts`.
 When the advisor is enabled, the local system-prompt nudge asks the executor to stop revisiting the same implementation decision twice without new evidence. It should first use one targeted local check when sufficient; otherwise it can make one abstract consultation for a consequential unresolved choice. The brief includes at most two candidates and asks for a recommendation, next action, and acceptance check—not a transcript of internal deliberation. The executor records the choice locally and proceeds, reopening it only after contradictory evidence. Disabled cloud access, configured limits, and enforced planning remain respected.
 
 This is prompt guidance, not automatic detection of internal reasoning or an automatic network call. Ordinary local debugging stays local. If cloud advice is unavailable, the model should test a safe reversible choice or report a blocker rather than loop indefinitely.
+
+
+Compaction in the same running session preserves the current planning approval and local checklist for the immediate continuation. A fresh interactive/RPC user input still starts a new planning stage, even if compaction occurred. Compaction does not grant approval where none existed. Approval is held in process memory; restarting/reloading the extension is not covered by this preservation.
