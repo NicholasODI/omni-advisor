@@ -14,26 +14,8 @@
 //     system prompt (advisorBlock + optional domain focus) and the one
 //     masked query (advisoryFrame). No session history, no tools, and no
 //     local file context ever reach the cloud model (see advisorDispatch.ts).
-//   * Zero data leakage: every outbound cloud payload is scrubbed by the
-//     stateful cipher (deterministic spans for emails/keys/tokens/UUIDs/...
-//     + value-group patterns + semantic terms registered via
-//     register_masked_terms); every inbound cloud response is unmasked
-//     before it reaches the local model.
-//   * Per-session append-only logs in logs/ record [SANITIZE], [CIPHER],
-//     [CLOUD_OUT], [CLOUD_IN], [UNMASK], [MODEL_USAGE], [CLOUD_QUOTA],
-//     [ADVISOR_MODEL], [SESSION_END], [ERROR].
-//
-// Pipeline:
-//   1. Your prompt goes to the local model. Always. No interception.
-//   2. The local model works on the task. When it needs expert advice it
-//      calls ask_advisor(query) with a specific, focused question.
-//   3. The query is masked and dispatched as an ISOLATED completion call to
-//      the cloud advisor (fresh two-message context, no tools, no history).
-//   4. The advisor's response is captured, UNMASKED, and returned inline as
-//      the tool result so the local model continues with the advice in hand.
-//   5. The enabledByDefault gate controls whether the local model receives
-//      a system-prompt nudge encouraging it to use ask_advisor. The tool
-//      itself is always available regardless of the gate.
+//   * Abstract briefs are validated and masked; no automatic context sharing.
+//   * Cloud access is enforced by the session gate.
 //
 // Controls:
 //   /omni-advisor on | off | status | model [provider/model] | model clear
@@ -52,7 +34,9 @@
 // User-level extension: no changes to omp itself. Disable via
 // `disabledExtensions: [extension-module:omni-advisor]` or delete this folder.
 
-import { basename, dirname, join } from "node:path";
+import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
+import { assertAbstract, planningText } from "./planning.ts";
 import { fileURLToPath } from "node:url";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import type { ExtensionAPI, ExtensionCommandContext } from "@oh-my-pi/pi-coding-agent";
@@ -66,7 +50,7 @@ import {
   loadProvider,
   type GatewayUsageReport,
 } from "./gateway.ts";
-import { dispatchIsolatedAdvisor, splitSelector } from "./advisorDispatch.ts";
+import { dispatchIsolatedAdvisor, splitSelector, type ProviderConfig } from "./advisorDispatch.ts";
 import { log, logPath } from "./logger.ts";
 
 /**
@@ -75,6 +59,8 @@ import { log, logPath } from "./logger.ts";
  */
 interface OmniAdvisorConfig {
   enabledByDefault?: boolean;
+  providers?: Record<string, ProviderConfig>;
+  maxConsultationsPerSession?: number;
   /** "provider/model" — the provider must be an models.yml block with a baseUrl. */
   advisorModel?: string;
   /** Max time to wait for the isolated advisor completion (ms). Default 120000. */
@@ -130,6 +116,7 @@ function refreshModelOptions(): void {
   const sel = advisorSelector();
   const { provider } = splitSelector(sel);
   const gw = loadProvider(provider);
+  if (config.providers?.[provider] || !gw) { modelOptionsInFlight = false; return; }
   void fetchGatewayModels(gw ?? { provider, baseUrl: "", apiKey: null }, 8000)
     .then((data) => {
       const items: AdvisorModelOption[] = data.map((m) => ({
@@ -238,6 +225,8 @@ function persistGates(): void {
 }
 
 const gateOnBySession = loadGates();
+const consultationCounts = new Map<string, number>();
+const pendingConsultations = new Set<string>();
 const lastQuotaBySession = new Map<string, { ts: number; report: GatewayUsageReport }>();
 
 /** Refresh the advisor gateway's usage report and cache it per session.
@@ -266,7 +255,7 @@ function sessionKey(ctx: { sessionManager: unknown }): string {
     unknownKeyWarned = true;
     log("unknown", "ERROR", "sessionKey fallback: ctx.sessionManager.getSessionFile() unavailable; cipher bucketing degrades to shared 'unknown' key (terms persist across sessions) until omp restart");
   }
-  return f ? basename(f) : "unknown";
+  return f ? createHash("sha256").update(f).digest("hex") : "unknown";
 }
 
 function truncate(s: string, max: number): string {
@@ -285,15 +274,20 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     description:
       "Consult a generalist software architect for initial task planning (rough overview without local files/code), architecture, performance, concurrency, security, and unfamiliar-framework questions. Do NOT use for routine syntax or locally verifiable work—work solo ($0). The query is masked (sensitive values become OMNI_* placeholders), sent to an isolated cloud advisor with no access to your files, tools, or conversation history, and the unmasked advice is returned.",
     parameters: z.object({
-      query: z
-        .string()
-        .describe(
-          "The planning overview or technical dilemma. For initial planning, provide a high-level summary of the goal and expected volume without local code or files. For mid-task questions, name the language/framework/platform, the volume involved, and the specific hazard you want checked.",
-        ),
+      objective: z.string().min(1).max(3000),
+      stack: z.string().max(1000).optional(),
+      components: z.string().max(2000).optional(),
+      constraints: z.string().max(2000).optional(),
+      facts: z.string().max(2000).optional(),
+      questions: z.string().min(1).max(3000),
+      previousPlan: z.string().max(2000).optional(),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const key = sessionKey(ctx);
-      const query = params.query.trim();
+      if (key === "unknown" || !isAdvisorEnabled(key)) {
+        return { content: [{ type: "text", text: "Cloud consultation blocked: enable /omni-advisor on and use an isolated session. Continue locally." }], details: { status: "disabled" } };
+      }
+      const query = planningText(params);
       if (!query) {
         return {
           content: [{ type: "text", text: "Error: ask_advisor requires a non-empty query." }],
@@ -301,17 +295,26 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         };
       }
 
+      const limit = config.maxConsultationsPerSession ?? 3;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100 || pendingConsultations.has(key) || (consultationCounts.get(key) ?? 0) >= limit) {
+        return { content: [{ type: "text", text: "Consultation budget exhausted or another consultation is pending. Continue with the local plan." }], details: { status: "budget" } };
+      }
+      pendingConsultations.add(key);
       try {
+        assertAbstract(query);
+        const focus = advisorFocus();
+        if (focus) assertAbstract(focus);
         ensureConfigTerms(key);
         const masked = cipher.mask(query, key);
         log(
           key,
           "CLOUD_OUT",
-          `ask_advisor query (masked, isolated dispatch): ${truncate(masked, 2000)}`,
+          `ask_advisor query (masked, isolated dispatch): ${masked.length} characters`,
         );
 
         const sel = advisorSelector();
-        const result = await dispatchIsolatedAdvisor(sel, masked, config.advisorTimeoutMs, advisorFocus());
+        consultationCounts.set(key, (consultationCounts.get(key) ?? 0) + 1);
+        const result = await dispatchIsolatedAdvisor(sel, masked, config.advisorTimeoutMs, focus ? cipher.mask(focus, key) : undefined, config.providers, _signal);
 
         if (!result.ok) {
           log(key, "ERROR", `advisor dispatch failed: ${result.error}`);
@@ -321,12 +324,14 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
           };
         }
 
-        log(key, "CLOUD_IN", `Advisor response (still masked): ${truncate(result.text!, 2000)}`);
+        log(key, "CLOUD_IN", `Advisor response: ${result.text!.length} characters`);
+        if (result.usage) usage.recordUsage(key, sel, result.usage);
         log(key, "UNMASK", `Advisor response restored to real values (${cipher.status(key).count} mappings active).`);
-        const unmasked = cipher.unmask(result.text!, key);
+        // Keep placeholders unresolved: cloud output cannot select local secrets.
+        const unmasked = result.text!;
 
         // Best-effort: keep the per-session quota display fresh after a cloud call.
-        void refreshQuota(key);
+        if (!config.providers?.[splitSelector(sel).provider]) void refreshQuota(key);
 
         return {
           content: [{ type: "text", text: toolResponseFrame(unmasked) }],
@@ -336,12 +341,14 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         log(
           key,
           "ERROR",
-          `ask_advisor failed: ${err instanceof Error ? `${err.message}\n${err.stack}` : String(err)}`,
+          "ask_advisor validation or execution failed",
         );
         return {
-          content: [{ type: "text", text: "Error: cloud advisor request failed (see debug.log)." }],
+          content: [{ type: "text", text: "Consultation blocked: use an abstract brief without code blocks, credentials, URLs, or paths (maximum 12000 characters). Continue locally." }],
           details: {},
         };
+      } finally {
+        pendingConsultations.delete(key);
       }
     },
   });
@@ -534,7 +541,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       }
       const lines = [
         `omni-cipher: ${st.count} active mapping(s) for this session:`,
-        ...st.entries.map((e) => `  ${e.placeholder}  ⇄  ${e.raw}  (${e.type})`),
+        ...st.entries.map((e) => `  ${e.placeholder} (${e.type})`),
         "",
         `Log files (kept, append-only):`,
         `  ${logPath(key)}`,
@@ -585,6 +592,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     handler: async (_arg: string, ctx: ExtensionCommandContext) => {
       const key = sessionKey(ctx);
       cipher.clearSession(key);
+      configTermsEnsuredFor.delete(key);
       usage.clearUsage(key);
       ctx.ui.notify("omni-cipher: mappings and usage cleared for this session.", "info");
     },

@@ -28,13 +28,13 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { log, LOG_DIR, maskEmails } from "./logger.ts";
+import { log, LOG_DIR, safeSessionId } from "./logger.ts";
 
 /** Per-session sidecar so registered terms survive process restarts:
  *  <LOG_DIR>/<session-key>.cipher.json (raw values, same exposure as the
  *  append-only debug log which already records each scrubbed value). */
 function sidecarPath(key: string): string {
-  return join(LOG_DIR, key + ".cipher.json");
+  return join(LOG_DIR, safeSessionId(key) + ".cipher.json");
 }
 
 interface SessionCipher {
@@ -47,10 +47,11 @@ interface SessionCipher {
 function persist(s: SessionCipher): void {
   if (s.mapping.size === 0) return;
   try {
-    mkdirSync(LOG_DIR, { recursive: true });
+    mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
     writeFileSync(
       sidecarPath(s.key),
       JSON.stringify({ mapping: [...s.mapping.entries()], counters: Object.fromEntries(s.counters) }),
+      { mode: 0o600 },
     );
   } catch (e) {
     log(s.key, "SANITIZE", `cipher persist failed: ${String(e)}`);
@@ -197,7 +198,7 @@ function register(s: SessionCipher, type: TermType, raw: string): string {
   const placeholder = `${prefix}_${String(n).padStart(2, "0")}`;
   s.mapping.set(placeholder, raw);
   s.reverse.set(raw, placeholder);
-  log(s.key, "SANITIZE", `${maskEmails(raw)} -> ${placeholder} (${type})`);
+  log(s.key, "SANITIZE", `Registered ${placeholder} (${type})`);
   return placeholder;
 }
 
