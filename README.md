@@ -61,3 +61,20 @@ Run `/omni-advisor model omp` to open a picker of the current instance's availab
 For persistent selection set `"advisorSource": "omp"` and `"advisorModel": "provider/model-id"` in the config. For temporary selection use `/omni-advisor source omp` followed by `/omni-advisor model provider/model-id`. Return to explicit endpoint configuration with `/omni-advisor source config`. Command source/model overrides last for the process. OMP mode requires the host's `@oh-my-pi/pi-ai` package and registry APIs; unsupported/missing authentication fails without falling back to another provider. Endpoint transport, authentication refresh, and provider-specific behavior are managed by OMP in this mode. Provider support depends on the installed OMP version.
 
 Additional standalone adapter test: `node test-omp-advisor.ts`. Live OMP integration is not covered by these mock tests.
+
+## Optional enforced planning stage
+
+Set `"enforcePlanning": true` in the configuration and reload OMP, or run:
+
+```
+/omni-advisor on
+/omni-advisor planning on
+```
+
+For each new user prompt, execution tools are blocked until `ask_advisor` successfully returns a plan. The local model is instructed to inspect locally, prepare an abstract brief, and consult before executing. Only `read`, `grep`, `glob`, `ls`, `find`, `register_masked_terms`, and `ask_advisor` are allowed before planning. Shell and delegation are deliberately blocked because they can modify state. Custom discovery tools are blocked too. Successful advice unlocks execution only for the current prompt; stale results from an older prompt cannot unlock a newer one.
+
+Cloud enablement is separate: enforcement never turns cloud access on or forwards your prompt automatically. Privacy rejection, missing credentials, cancellation, and exhausted consultation budget do not unlock execution. Use `/omni-advisor planning off` to explicitly continue locally when blocked. Runtime enforcement overrides are session-scoped. `/omni-advisor status` shows enforcement state.
+
+This opt-in mode gates tools for every user prompt, rather than guessing which tasks are nontrivial. Pure conversational replies do not require a consultation. Multi-prompt workflows may need a higher `maxConsultationsPerSession` than the default three. Enforcement depends on OMP's `tool_call` hook and cannot guarantee that the model produces a high-quality abstract brief; existing heuristic privacy limitations still apply.
+
+Test: `node test-planning-gate.ts`.

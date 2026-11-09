@@ -1,1 +1,7 @@
-{"enabledByDefault":false,"advisorModel":"codex-lb/gpt-6.1-sol","advisorFocus":"","semanticTerms":{}}
+{
+  "enabledByDefault": false,
+  "advisorModel": "codex-lb/gpt-6.1-sol",
+  "advisorFocus": "",
+  "semanticTerms": {},
+  "enforcePlanning": false
+}

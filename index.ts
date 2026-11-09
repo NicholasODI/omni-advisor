@@ -51,6 +51,7 @@ import {
   type GatewayUsageReport,
 } from "./gateway.ts";
 import { dispatchIsolatedAdvisor, splitSelector, type ProviderConfig } from "./advisorDispatch.ts";
+import { PlanningGate, enforcedPlanningPrompt } from "./planningGate.ts";
 import { dispatchOmpAdvisor } from "./ompAdvisor.ts";
 import { log, logPath } from "./logger.ts";
 
@@ -60,6 +61,7 @@ import { log, logPath } from "./logger.ts";
  */
 interface OmniAdvisorConfig {
   enabledByDefault?: boolean;
+  enforcePlanning?: boolean;
   providers?: Record<string, ProviderConfig>;
   advisorSource?: "config" | "omp";
   maxConsultationsPerSession?: number;
@@ -229,6 +231,9 @@ function persistGates(): void {
 }
 
 const gateOnBySession = loadGates();
+const planningGate = new PlanningGate();
+const planningOverrides = new Map<string, boolean>();
+function planningEnforced(key: string): boolean { return planningOverrides.get(key) ?? config.enforcePlanning === true; }
 const consultationCounts = new Map<string, number>();
 const pendingConsultations = new Set<string>();
 const lastQuotaBySession = new Map<string, { ts: number; report: GatewayUsageReport }>();
@@ -303,6 +308,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       if (!Number.isInteger(limit) || limit < 1 || limit > 100 || pendingConsultations.has(key) || (consultationCounts.get(key) ?? 0) >= limit) {
         return { content: [{ type: "text", text: "Consultation budget exhausted or another consultation is pending. Continue with the local plan." }], details: { status: "budget" } };
       }
+      const planningToken = planningGate.token(key);
       pendingConsultations.add(key);
       try {
         assertAbstract(query);
@@ -331,9 +337,10 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
           };
         }
 
+        planningGate.complete(key, planningToken);
         log(key, "CLOUD_IN", `Advisor response: ${result.text!.length} characters`);
         if (result.usage) usage.recordUsage(key, sel, result.usage);
-        log(key, "UNMASK", `Advisor response restored to real values (${cipher.status(key).count} mappings active).`);
+        log(key, "PLAN", "Advisor plan received; placeholders retained.");
         // Keep placeholders unresolved: cloud output cannot select local secrets.
         const unmasked = result.text!;
 
@@ -413,8 +420,18 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
   // sent inside the isolated completion request, never here.
   // ---------------------------------------------------------------------
   pi.on("before_agent_start", async (event, ctx) => {
-    if (!isAdvisorEnabled(sessionKey(ctx))) return;
-    return { systemPrompt: [...event.systemPrompt, executorNudge()] };
+    const key = sessionKey(ctx);
+    const enforced = planningEnforced(key);
+    if (enforced && event.reason !== "revive") planningGate.begin(key);
+    if (!isAdvisorEnabled(key) && !enforced) return;
+    return { systemPrompt: [...event.systemPrompt, executorNudge(), ...(enforced ? [enforcedPlanningPrompt] : [])] };
+  });
+
+  pi.on("tool_call", async (event, ctx) => {
+    const key = sessionKey(ctx);
+    if (planningEnforced(key) && planningGate.blocked(key, event.toolName)) {
+      return { block: true, reason: "Execution blocked by enforced planning. Use read/grep/glob/ls/find to gather local facts, then call ask_advisor with an abstract brief. A successful consultation unlocks execution for this prompt. If cloud access or budget is unavailable, report the blocker; the user can use /omni-advisor planning off." };
+    }
   });
 
   // ---------------------------------------------------------------------
@@ -449,6 +466,8 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       `session closed: in=${tot.input} out=${tot.output} cacheR=${tot.cacheRead} msgs=${tot.messages} total=$${(tot.costUsd ?? 0).toFixed(4)}`,
     );
     gateOnBySession.delete(key);
+    planningGate.clear(key);
+    planningOverrides.delete(key);
   });
 
   // ---------------------------------------------------------------------
@@ -474,6 +493,8 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       const p = text.trim().toLowerCase();
       if (p.includes(" ")) return null;
       const subs = [
+        { label: "planning on", value: "planning on", description: "Require abstract cloud planning before execution tools" },
+        { label: "planning off", value: "planning off", description: "Disable planning enforcement" },
         { label: "on", value: "on", description: "Enable advisor nudge for this session" },
         { label: "off", value: "off", description: "Disable advisor nudge for this session" },
         { label: "status", value: "status", description: "Show gate state + resolved advisor model" },
@@ -489,6 +510,13 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       const key = sessionKey(ctx);
       const argNorm = (arg || "").trim().toLowerCase();
       const raw = (arg || "").trim();
+      if (argNorm === "planning on" || argNorm === "planning off") {
+        const enforce = argNorm === "planning on";
+        planningOverrides.set(key, enforce);
+        if (enforce) planningGate.begin(key); else planningGate.clear(key);
+        ctx.ui.notify(`omni-advisor: enforced planning ${enforce ? "ON (cloud access must also be on)" : "OFF"}`, "info");
+        return;
+      }
       if (argNorm === "source omp" || argNorm === "source config") {
         sourceOverride = argNorm === "source omp" ? "omp" : "config";
         ctx.ui.notify(`omni-advisor: source=${advisorSource()}`, "info");
@@ -548,7 +576,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       const on = isAdvisorEnabled(key);
       const def = config.enabledByDefault === true;
       ctx.ui.notify(
-        `omni-advisor: pipeline ${on ? "enabled" : "disabled"}; default=${def ? "enabled" : "disabled"}; advisor=${advisorSelector()} source=${advisorSource()} (isolated dispatch)`,
+        `omni-advisor: pipeline ${on ? "enabled" : "disabled"}; default=${def ? "enabled" : "disabled"}; advisor=${advisorSelector()} source=${advisorSource()} enforcedPlanning=${planningEnforced(key)} (isolated dispatch)`,
         "info",
       );
     },
