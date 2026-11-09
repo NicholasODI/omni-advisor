@@ -90,3 +90,10 @@ Metrics separate successful and failed consultation attempts from locally blocke
 Privacy errors identify the brief field and category without echoing values. Base64 detection now requires mixed-case letters and digits to avoid masking slash-separated state names; explicit known credential patterns and registered terms remain active. This heuristic can still miss secrets: abstract sensitive details locally and register sensitive values rather than relying on entropy detection alone.
 
 Regression checks: `node test-improvements.ts`.
+
+
+## Local decision-loop recovery
+
+When the advisor is enabled, the local system-prompt nudge asks the executor to stop revisiting the same implementation decision twice without new evidence. It should first use one targeted local check when sufficient; otherwise it can make one abstract consultation for a consequential unresolved choice. The brief includes at most two candidates and asks for a recommendation, next action, and acceptance check—not a transcript of internal deliberation. The executor records the choice locally and proceeds, reopening it only after contradictory evidence. Disabled cloud access, configured limits, and enforced planning remain respected.
+
+This is prompt guidance, not automatic detection of internal reasoning or an automatic network call. Ordinary local debugging stays local. If cloud advice is unavailable, the model should test a safe reversible choice or report a blocker rather than loop indefinitely.
