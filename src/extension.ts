@@ -55,6 +55,7 @@ import {
 } from "./advisor/gateway.ts";
 import { dispatchIsolatedAdvisor, splitSelector, type ProviderConfig } from "./advisor/advisorDispatch.ts";
 import { startAdvisorProgress, updateAdvisorFooter } from "./ui/advisorProgress.ts";
+import { scopeInstructions } from "./workflow/executionScope.ts";
 import { recoveryHint, type RecoveryMode } from "./workflow/recovery.ts";
 import { RecoverySessions } from "./state/recoverySession.ts";
 import { SessionMetrics } from "./state/sessionMetrics.ts";
@@ -495,7 +496,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         readiness = explicit.apiKeyEnv && !process.env[explicit.apiKeyEnv] ? "required key environment variable missing" : "configuration present; connectivity unverified";
       } else if (loadProvider(provider)) readiness = "legacy configuration present; connectivity unverified";
       const status = { enabled: isAdvisorEnabled(key), isolatedSession: key !== "unknown", source: advisorSource(), model: selector,
-        executionMode: executionMode(key), enforcedPlanning: planningEnforced(key), awaitingPlan: planningEnforced(key) && !planningGate.ready(key),
+        authorization:recovery(ctx).snapshot().scope??'active', executionMode: executionMode(key), enforcedPlanning: planningEnforced(key), awaitingPlan: planningEnforced(key) && !planningGate.ready(key),
         pending: pendingConsultations.has(key), maxConsultationsPerSession: config.maxConsultationsPerSession ?? null,
         attemptedDispatches: consultationCounts.get(key) ?? 0, providerReadiness: readiness,
         recovery: { mode:recoveryMode(), threshold:recoveryThreshold(), persistence:recoverySessions.persistence(recoveryKey(ctx)), state:recovery(ctx).summary() },
@@ -557,7 +558,11 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
   // sent inside the isolated completion request, never here.
   // ---------------------------------------------------------------------
   pi.on("input", async (event, ctx) => {
-    if (event.source !== "extension") freshInputSessions.add(sessionKey(ctx));
+    if (event.source !== "extension") {
+      freshInputSessions.add(sessionKey(ctx));
+      recovery(ctx).userInput(event.text ?? '');
+      recoverySessions.save(recoveryKey(ctx));
+    }
   });
   pi.on("session_compact", async (_event, ctx) => {
     compactedSessions.add(sessionKey(ctx));
@@ -573,14 +578,16 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       checklists.delete(key);
       if (enforced) planningGate.begin(key);
     }
-    if (!isAdvisorEnabled(key) && !enforced && recoveryMode() === "disabled") return;
+    if (!isAdvisorEnabled(key) && !enforced && recoveryMode() === "disabled" && (recovery(ctx).snapshot().scope??'active')==='active') return;
     const recoveryHandoff = recoveryMode() === "disabled" ? [] : recovery(ctx).summary().episodes.filter(e=>['required','blocked'].includes(e.phase)).slice(-2).map(e=>({episode:e.id,category:e.category,attempts:e.attempts,phase:e.phase,nextAction:e.decision?.nextAction,stopWhen:e.decision?.stopWhen}));
     const advisorPrompts=isAdvisorEnabled(key) ? [executorNudge(),abstractOnlyInstructions] : ["Cloud access is OFF. Recover locally with advisor_recovery or report a blocker; do not attempt advisor calls or enable cloud access yourself.",abstractOnlyInstructions];
-    return { systemPrompt: [...event.systemPrompt, ...advisorPrompts, ...(recoveryHandoff.length ? [`Pending recovery: ${JSON.stringify(recoveryHandoff)}. Use advisor_recovery for full evidence; this is local state, never upload it automatically.`] : []), ...(isAdvisorEnabled(key) && executionMode(key) !== "local-led" ? [executionInstructions(executionMode(key))] : []), ...(enforced ? [enforcedPlanningPrompt, ...(planningGate.ready(key) ? ["A successful cloud plan is already approved for the current task. Continue local execution from the retained plan/checklist; compaction does not require another consultation."] : [])] : [])] };
+    return { systemPrompt: [...event.systemPrompt, scopeInstructions(recovery(ctx).snapshot()), ...advisorPrompts, ...(recoveryHandoff.length ? [`Pending recovery: ${JSON.stringify(recoveryHandoff)}. Use advisor_recovery for full evidence; this is local state, never upload it automatically.`] : []), ...(isAdvisorEnabled(key) && executionMode(key) !== "local-led" ? [executionInstructions(executionMode(key))] : []), ...(enforced ? [enforcedPlanningPrompt, ...(planningGate.ready(key) ? ["A successful cloud plan is already approved for the current task. Continue local execution from the retained plan/checklist; compaction does not require another consultation."] : [])] : [])] };
   });
 
   pi.on("tool_call", async (event, ctx) => {
     const key = sessionKey(ctx);
+    const restricted=recovery(ctx).scopeRestriction(event.toolName,event.input??{});
+    if(restricted)return {block:true,reason:restricted};
     if (planningEnforced(key) && planningGate.blocked(key, event.toolName)) {
       return { block: true, reason: "Execution blocked by enforced planning. Use read/grep/glob/ls/find to gather local facts, then call ask_advisor with an abstract brief. A successful consultation unlocks execution for this prompt. If cloud access or budget is unavailable, report the blocker; the user can use /omni-advisor planning off." };
     }
@@ -673,6 +680,10 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       const p = text.trim().toLowerCase();
       if (p.includes(" ")) return null;
       const subs = [
+        { label: "scope active", value: "scope active", description: "Explicitly authorize execution/resume" },
+        { label: "scope paused", value: "scope paused", description: "Stop new work; reminders cannot resume it" },
+        { label: "scope analysis", value: "scope analysis", description: "Inspection only, no shell/edit/delegation" },
+        { label: "scope closure", value: "scope closure", description: "Wrap up current scope" },
         { label: "recovery observe", value: "recovery observe", description: "Notify on repeated failures (default)" },
         { label: "recovery enforce", value: "recovery enforce", description: "Require a decision before equivalent retries" },
         { label: "recovery disabled", value: "recovery disabled", description: "Disable recovery detection and blocking" },
@@ -699,6 +710,10 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       const key = sessionKey(ctx);
       const argNorm = (arg || "").trim().toLowerCase();
       const raw = (arg || "").trim();
+      if (/^scope (active|paused|analysis|closure)$/i.test(raw)) {
+        recovery(ctx).setScope(argNorm.split(' ')[1] as 'active'|'paused'|'analysis'|'closure');recoverySessions.save(recoveryKey(ctx));
+        ctx.ui.notify(`Execution authorization: ${argNorm.split(' ')[1]}`,"info");return;
+      }
       if (/^recovery (disabled|observe|enforce)$/i.test(raw)) {
         config.recoveryMode=argNorm.split(' ')[1] as RecoveryMode;ctx.ui.notify(`Recovery mode: ${config.recoveryMode}`,"info");return;
       }
@@ -711,10 +726,11 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       if (!raw || argNorm === "settings") {
         if (ctx.hasUI === false || !ctx.ui?.select || !ctx.ui?.input) { ctx.ui.notify("Interactive settings unavailable. Use on/off/status/model/source/mode/planning commands or edit config.", "warning"); return; }
         await openSettings(ctx.ui, () => ({ enabled: isAdvisorEnabled(key), enforced: planningEnforced(key), mode: executionMode(key),
-          source: advisorSource(), model: advisorSelector(), recoveryMode:recoveryMode(), recoveryThreshold:recoveryThreshold(), limit: config.maxConsultationsPerSession, timeout: config.advisorTimeoutMs ?? 120000 }), {
+          source: advisorSource(), model: advisorSelector(), recoveryMode:recoveryMode(), recoveryThreshold:recoveryThreshold(), authorization:recovery(ctx).snapshot().scope??'active', limit: config.maxConsultationsPerSession, timeout: config.advisorTimeoutMs ?? 120000 }), {
           change(patch) {
             if (patch.enabled !== undefined) { gateOnBySession.set(key, patch.enabled); if (patch.enabled) ensureConfigTerms(key); }
             if (patch.enforced !== undefined) { planningOverrides.set(key, patch.enforced); if (patch.enforced) planningGate.begin(key); else planningGate.clear(key); }
+            if(patch.authorization){recovery(ctx).setScope(patch.authorization);recoverySessions.save(recoveryKey(ctx));}
             if (patch.recoveryMode) config.recoveryMode=patch.recoveryMode;
             if (patch.recoveryThreshold !== undefined) config.recoveryThreshold=patch.recoveryThreshold;
             if (patch.mode) executionModeOverrides.set(key, patch.mode);

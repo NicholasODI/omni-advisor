@@ -36,6 +36,7 @@ node tests/test-advisor-progress.ts
 node tests/test-advisor-stream.ts
 node tests/test-recovery.ts
 node tests/test-recovery-advisor.ts
+node tests/test-session-regressions.ts
 node tests/test-settings.ts
 node tests/test-privacy-policy.ts
 ```
@@ -51,6 +52,7 @@ node tests/test-privacy-policy.ts
 | `tests/test-advisor-stream.ts` | SSE framing, phases, reasoning exclusion, usage, incomplete/truncated streams |
 | `tests/test-recovery.ts` | Persistent evidence, normalization, one-shot selective enforcement, resume/task isolation, overrides |
 | `tests/test-recovery-advisor.ts` | No repeated escalation after privacy rejection, cancellation, timeout/unavailability, or budget exhaustion |
+| `tests/test-session-regressions.ts` | Logical check continuity, mixed diagnostics, persisted authorization, reminder precedence and closure |
 | `tests/test-settings.ts` | Menu navigation, cancellation, provider validation, persistence, workflow prompts |
 | `tests/test-privacy-policy.ts` | Structural context, sensitive input rejection before dispatch, memory-only mappings |
 

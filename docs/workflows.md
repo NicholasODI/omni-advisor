@@ -68,3 +68,5 @@ The executor keeps settled decisions closed unless evidence changes and stops wh
 The default is **observe**: record similar failures and request one short decision at a configurable threshold. Optional **enforce** mode blocks only the repeated operation while allowing inspection and a recorded one-shot diagnostic/remedy. Cloud advice is optional; the local model can record a hypothesis or external blocker without network access. State survives compaction/resume and resets only for an explicit unrelated-task transition.
 
 Recovery never weakens acceptance criteria or runs broader tests automatically. Required final gates remain required. See [recovery controls and limitations](recovery.md) for persistence, overrides, and the optional context-forge handoff surface.
+
+Explicit stop and analysis-only requests now have [persistent tool-authorization controls](recovery.md#user-authorization-takes-precedence). Todo reminders do not resume stopped work. Wrap-up requests freeze scope in guidance and restrict unrequested destructive cleanup; required final verification is still required.

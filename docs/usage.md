@@ -16,6 +16,7 @@
 | `/omni-advisor mode balanced` / `mode local-led` / `mode cloud-led` | Select workflow for the session |
 | `/omni-advisor planning on` / `planning off` | Enable or disable planning enforcement |
 | `/omni-advisor recovery disabled` / `observe` / `enforce` | Set recovery mode (process override; save in menu for defaults) |
+| `/omni-advisor scope active` / `paused` / `analysis` / `closure` | Set explicit execution authorization for this session |
 | `/omni-advisor recovery new-task` | Retire old recovery episodes for unrelated work |
 | `/omni-advisor recovery override <id> <reason>` | Record a user-authorized single retry |
 | `/omni-usage` | Show token totals, consultation counts, timing, and cached quota if available |

@@ -42,7 +42,7 @@ Version 1 state holds one recovery task ID and at most eight recent episodes. An
 | `retired` | A different diagnostic exposed a new failure; this does not mark a gate passed |
 | `blocked` | An external prerequisite is unavailable; report it instead of retrying |
 
-Operations are fingerprinted from command + working directory, evaluation code, or edit/write target. Cosmetic whitespace and simple-token quoting in commands are normalized. Volatile timestamps, temporary paths, IDs, locations, and ports are normalized in diagnostic signatures. Distinct assertion messages remain distinct.
+Operations are fingerprinted from command + working directory, evaluation code, or edit/write target. Cosmetic whitespace and simple-token quoting in unknown commands are normalized; recognized logical checks also group common wrapper variations (see below). Volatile timestamps, temporary paths, IDs, locations, and ports are normalized in diagnostic signatures. Distinct assertion messages remain distinct.
 
 Structured exit codes/test counts are preferred. Current OMP BashToolDetails exposes `exitCode` and `timedOut`; a timed-out operation remains unrun/incomplete even if partial output contains passes; optional structured test counts are used when a tool supplies them. Bounded parsing recognizes selected runner failure markers and exception lines. Failures are classified as transport, environment, edit syntax, assertion, setup, or command failures. These categories are clues, not proof that the product or harness is at fault. Read results are not evaluated as failures. Output is data, never instructions.
 
@@ -95,7 +95,7 @@ Without `appendEntry` or branch history, recovery still works in memory; persist
 
 Hard retry blocking requires OMP's blocking `tool_call` hook (`{block: true, reason}`). `tool_result` supplies observations; notifications alone cannot enforce retries. The implementation targets the same OMP extension API as the rest of this repository. Older hosts missing those hooks need an upgrade; observe mode is the default. Live host behavior remains a separate validation step from mock tests.
 
-This is not a universal shell interpreter, filesystem tracker, process supervisor, or semantic progress detector. Command wrappers, relative/absolute path aliases, changed evaluation code, unsupported structured fields, unrecognized failure formats, and zero-exit commands that conceal failures can evade grouping. Only retained episodes are controlled; older episodes are evicted at the eight-episode bound. Successful inspection does not reset a known failure. A different failure retires the old signature without declaring the test passed.
+This is not a universal shell interpreter, filesystem tracker, process supervisor, or semantic progress detector. Unrecognized/nested command wrappers, relative/absolute path aliases, changed evaluation code, unsupported structured fields, unrecognized failure formats, and zero-exit commands that conceal failures can evade grouping. Only retained episodes are controlled; older episodes are evicted at the eight-episode bound. Successful inspection does not reset a known failure. For unrecognized operations a different failure retires the old signature without declaring a pass. Recognized logical checks accumulate unsuccessful diagnostics until observed source progress starts a new window.
 
 No test is launched merely because recovery fires. No required gate is disabled or marked passed. Diagnostics and user communication remain possible even when an operation is blocked. The model must still honor the original acceptance criteria and scope.
 
@@ -110,3 +110,34 @@ The supported read surface is `advisor_recovery` (inspect) or `advisor_status.re
 `tests/test-recovery.ts` covers repetition, normalization, classification, real-progress/new-failure separation, one-shot actions, overrides, local/cloud-off recovery, session restoration/isolation, task transitions, bounded state, evidence invalidation, and privacy-safe persistence. `tests/test-recovery-advisor.ts` covers privacy rejection, cancellation, simulated authentication timeout/unavailability, budget exhaustion, and one reservation per episode.
 
 See [development checks](development.md). Mock regressions do not certify live OMP hook execution or semantic correctness of a model's recovery decision.
+
+## Controls added from full-session analysis
+
+Recognized package-manager build/test/lint/typecheck commands now have a logical identity independent of output filtering, redirection, or a preceding cache cleanup. Named test lanes and explicit test targets remain distinct. A simple leading `cd` preserves a separate baseline/worktree scope. Help/version requests and recognizable quoted examples are not checks. Simple `rm -r...` operations can also be fingerprinted when no runner check is present.
+
+For a recognized logical operation, different unsuccessful diagnostics accumulate in the same episode at the same **observed source revision**. This catches an unchanged build moving between wrapper errors, static-generation errors, and truncated output. Observed successful source edits retire that progress window; they do not assert that the new failure is solved. Fine-grained unknown operations keep diagnostic-specific grouping. The `logicalStall` flag identifies the broader grouping in state.
+
+Known build error lines and permission errors are recognized even when a pipeline masks the process failure. A compound command containing several recognized checks cannot use one positive test summary to attest that every gate passed. This remains bounded parsing, not a universal shell interpreter. Filtered output can hide failures; preserve individual gate exit codes and complete result summaries instead of relying on the last pipeline command. One process running a loop may finish many attempts before any tool-result hook fires; recovery cannot interrupt its internal iterations.
+
+### User authorization takes precedence
+
+Direct user stop/analysis/wrap-up phrases update a small authorization latch stored in the same local session state. Only actual interactive/RPC input or explicit commands change it; extension-generated reminders, tool output, compaction, and a new recovery-task ID do not lift restrictions.
+
+| Authorization | Behavior |
+|---|---|
+| `active` | Existing planning/recovery controls apply normally |
+| `paused` | Block new tools except local status and recovery inspection; respond to the user |
+| `analysis` | Allow inspection/local planning/advice, block shell execution, edits/writes, and delegation |
+| `closure` | Freeze scope in prompt guidance; block common destructive cleanup/process-kill commands unless the user explicitly requested cleanup |
+
+Use **Authorization** in settings or `/omni-advisor scope active`, `scope paused`, `scope analysis`, or `scope closure` for an unambiguous override. These are session authorizations, not saved global defaults. An explicit user `continue` resumes the prior authorization after a pause; it does not turn an analysis-only request into implementation permission. Phrase detection is conservative and English-only. Ambiguous phrasing may need the menu/command; questions and arbitrary quoted content are not a reliable permission language.
+
+Scope gates apply even when recovery detection is disabled. They block future tool calls through OMP's hook; they do not stop an already-running process, undo work, or control host actions that bypass extension tool hooks. Closure guidance does not magically determine whether a particular edit/check is necessary. The narrow cleanup filter is not a general destructive-command sandbox.
+
+### Evidence and closure
+
+Injected guidance says to finish only the current scope, run missing required gates, and give one handoff instead of starting new harnesses, historical audits, or cleanup objectives. A later failed build at the same dependency version does not falsify an earlier successful build: source revision and environment matter. Preserve the earlier result as historical evidence and mark current verification separately. Failed deletion remains blocked, not deleted; unknown/truncated output is not success.
+
+These evidence/closure rules are advisory. The extension cannot prove a natural-language completion claim or validate the contents of arbitrary bookkeeping edits. The hard controls are tool authorization and selective known-operation retry gating; context-forge still owns project evidence provenance and goal supersession.
+
+`tests/test-session-regressions.ts` uses synthetic cases derived from the observed failure patterns, not copied session content. An offline observe-only replay of the supplied session's T-012 segment now flags the stalled build at the third recognized unsuccessful invocation, where the older exact-command detector produced no notification. That is detection evidence, not proof a live model would obey a notification or that all earlier work was redundant.

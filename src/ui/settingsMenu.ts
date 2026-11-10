@@ -1,8 +1,9 @@
+import type { ExecutionScope } from '../workflow/executionScope.ts';
 import type { RecoveryMode } from '../workflow/recovery.ts';
 import type { ExecutionMode } from '../workflow/executionMode.ts';
 export interface SettingsState {
   enabled: boolean; enforced: boolean; mode: ExecutionMode; source: 'config' | 'omp';
-  model: string; limit?: number; timeout: number; recoveryMode?: RecoveryMode; recoveryThreshold?: number;
+  model: string; limit?: number; timeout: number; recoveryMode?: RecoveryMode; recoveryThreshold?: number; authorization?: ExecutionScope;
 }
 interface MenuUI {
   select(title: string, options: string[]): Promise<string | undefined>;
@@ -20,7 +21,7 @@ export async function openSettings(ui: MenuUI, get: () => SettingsState, actions
     const s = get();
     const options = [`Cloud access: ${s.enabled ? 'ON' : 'OFF'}`, `Workflow: ${s.mode}`, `Planning enforcement: ${s.enforced ? 'ON' : 'OFF'}`,
       `Advisor source: ${s.source}`, `Advisor model: ${s.model}`, 'Provider settings',
-      `Limits: ${s.limit ?? 'unlimited'} calls; ${s.timeout / 1000}s timeout`, 'Save current choices as defaults', 'Close', `Recovery: ${s.recoveryMode ?? 'observe'}; threshold ${s.recoveryThreshold ?? 3}`];
+      `Limits: ${s.limit ?? 'unlimited'} calls; ${s.timeout / 1000}s timeout`, 'Save current choices as defaults', 'Close', `Recovery: ${s.recoveryMode ?? 'observe'}; threshold ${s.recoveryThreshold ?? 3}`, `Authorization: ${s.authorization ?? 'active'}`];
     const choice = await ui.select('Omni Advisor Settings — arrows + Enter; Esc closes', options);
     if (!choice || choice === 'Close') return;
     const index = options.indexOf(choice);
@@ -58,6 +59,10 @@ export async function openSettings(ui: MenuUI, get: () => SettingsState, actions
       const ms = Number(timeout) * 1000;
       if (!Number.isFinite(ms) || ms < 1000 || ms > 300000) { ui.notify('Timeout must be 1–300 seconds.', 'error'); continue; }
       actions.change({ limit: n, timeout: ms });
+    }
+    if(index === 10){
+      const authorization=await ui.select('Execution authorization for this session', ['active','paused','analysis','closure']);
+      if(authorization)actions.change({authorization:authorization as ExecutionScope});
     }
     if (index === 9) {
       const mode=await ui.select('Recovery control', ['disabled','observe','enforce']);

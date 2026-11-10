@@ -1,3 +1,5 @@
+import {logicalChecks} from './logicalChecks.ts';
+import {userScope, scopeBlock, type ScopeState} from './executionScope.ts';
 import { createHash, randomUUID } from 'node:crypto';
 import { assertAbstract } from '../privacy/planning.ts';
 
@@ -26,11 +28,16 @@ export function operationKey(tool: string, input: Record<string, unknown>): stri
   }
   if (tool === 'bash') {
     if (typeof input.command !== 'string') return undefined;
+    const checks=logicalChecks(input.command,input.cwd);
+    if(checks.length===1)return checks[0].key;
     // Ignore cosmetic quoting of simple tokens; do not parse shell control flow.
     const command = input.command.replace(/['"]([\w./\\:-]+)['"]/g, '$1').replace(/\s+/g, ' ').trim();
     return hash(`bash:${String(input.cwd ?? '')}:${command}`);
   }
   return tool === 'eval' && typeof input.code === 'string' ? hash(`eval:${input.code.replace(/\s+/g, ' ').trim()}`) : undefined;
+}
+function legacyShellKey(input:Record<string,unknown>):string|undefined {
+  return typeof input.command==='string' ? hash(`bash:${String(input.cwd??'')}:${input.command.replace(/['"]([\w./\\:-]+)['"]/g,'$1').replace(/\s+/g,' ').trim()}`) : undefined;
 }
 export interface Observation {
   operation: string; signature: string; category: FailureCategory; outcome: Outcome; compound: boolean;
@@ -44,7 +51,7 @@ export function classify(tool: string, input: Record<string, unknown>, result: {
   const tests = d.tests;
   const count = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0;
   const failedCount = tests && count(tests.failed) && tests.failed > 0;
-  const failedLine = text.split('\n').find(line => /^\s*(?:FAIL(?:ED)?\b|[✖×]\s)|^\s*(?:E\s+)?(?:AssertionError|SyntaxError|TypeError|ReferenceError|ECONNREFUSED|ENOENT|command not found|No module named|cannot find module)\b|^\s*(?:=+\s*)?\d+ failed\b|^\s*(?:ℹ\s*)?fail(?:ed)?\s*[:= ]\s*[1-9]\d*|^RESULT pass=\d+ fail=[1-9]\d*|^\s*(?:EXIT|GATE_EXIT|PYTEST_EXIT)=([1-9]\d*)/i.test(line));
+  const failedLine = text.split('\n').find(line => /^\s*(?:FAIL(?:ED)?\b|[✖×]\s)|^\s*(?:E\s+)?(?:AssertionError|SyntaxError|TypeError|ReferenceError|ECONNREFUSED|ENOENT|command not found|No module named|cannot find module)\b|^\s*(?:=+\s*)?\d+ failed\b|^\s*(?:ℹ\s*)?fail(?:ed)?\s*[:= ]\s*[1-9]\d*|^RESULT pass=\d+ fail=[1-9]\d*|^\s*(?:Error:|> Build error occurred|Export encountered an error|[^\n]*: Permission denied\s*$)|^\s*[^\n]+\.tsx?\(\d+,\d+\): error TS\d+|^\s*(?:EXIT|BUILD[-_]EXIT|GATE_EXIT|PYTEST_EXIT)=([1-9]\d*)/i.test(line));
   const failed = !!result.isError || (exit !== undefined && exit !== 0) || failedCount || !!failedLine;
   const timedOut=d.timedOut===true;
   let outcome: Outcome = timedOut ? 'unrun' : failed ? 'failed' : 'unknown';
@@ -55,13 +62,18 @@ export function classify(tool: string, input: Record<string, unknown>, result: {
   else if (!failed && !timedOut && (tool === 'edit' || tool === 'write')) outcome = 'passed';
   let category: FailureCategory = outcome === 'unrun' ? 'setup' : 'command';
   const diagnostic = timedOut ? 'execution deadline expired before completion' : failedLine ?? (typeof d.error?.code === 'string' ? d.error.code : failed ? text.split('\n').find(l => l.trim()) ?? 'tool failure' : outcome);
-  if (d.transportError === true) category = 'transport';
+  if (/Permission denied|EPERM|EACCES/i.test(diagnostic)) category='environment';
+  else if (d.transportError === true) category = 'transport';
   else if (timedOut) category = 'environment';
   else if ((tool === 'edit' || tool === 'write') && failed) category = 'edit-syntax';
   else if (/ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|ENOENT|not found|not recognized as|No module named|cannot find module|unavailable/i.test(diagnostic)) category = 'environment';
   else if (/SyntaxError|TypeError|ReferenceError|fixture|setup|collection|collecting/i.test(diagnostic)) category = 'setup';
   else if (failedCount || /assert|\bFAIL/i.test(diagnostic)) category = 'assertion';
-  const canonical = category === 'edit-syntax' && /column cap|no retained read/i.test(diagnostic) ? 'edit display cap requires fresh read'
+  const checks=tool==='bash'?logicalChecks(input.command,input.cwd):[];
+  if(checks.length>1&&outcome==='passed')outcome='unknown';
+  const buildFailure=checks.length===1&&checks[0].kind==='build'&&failed;
+  const canonical = buildFailure && /useContext|global-error|static (?:generation|pages)/i.test(text) ? 'build static-generation failure'
+    : category === 'edit-syntax' && /column cap|no retained read/i.test(diagnostic) ? 'edit display cap requires fresh read'
     : category === 'edit-syntax' && /stale.*(?:tag|anchor)|(?:tag|anchor).*mismatch/i.test(diagnostic) ? 'edit stale anchor'
     : normalizeDiagnostic(diagnostic);
   return { operation, signature: hash(`${category}:${canonical}`), category, outcome,
@@ -77,9 +89,9 @@ interface Episode {
   outcomes: Outcome[]; evidenceRevision: number; compound: boolean; adviceRequested: boolean;
   decisions: Array<{ hypothesis: string; remedy: string; revision: number }>;
   decision?: { hypothesis: string; changed: string; nextAction: string; expectedEvidence: string; stopWhen: string };
-  authorizedOperation?: string; overrideReason?: string;
+  authorizedOperation?: string; overrideReason?: string; logicalStall?:boolean;
 }
-export interface RecoveryState { version: 1; taskId: string; revision: number; episodes: Episode[]; }
+export interface RecoveryState extends ScopeState { version: 1; taskId: string; revision: number; episodes: Episode[]; }
 export class RecoveryController {
   private state: RecoveryState = { version: 1, taskId: randomUUID(), revision: 0, episodes: [] };
   private activeCalls = new Map<string, string>();
@@ -92,17 +104,21 @@ export class RecoveryController {
       if (JSON.stringify(raw).length > 32000) return false;
       const s = raw as RecoveryState;
       if (s.version !== 1 || !/^[a-f0-9-]{36}$/.test(s.taskId) || !Number.isSafeInteger(s.revision) || s.revision < 0 || !Array.isArray(s.episodes) || s.episodes.length > 8) return false;
+      if (s.scope!==undefined&&!['active','paused','analysis','closure'].includes(s.scope))return false;
+      if (s.resumeScope!==undefined&&!['active','paused','analysis','closure'].includes(s.resumeScope))return false;
+      if (s.cleanupAllowed!==undefined&&typeof s.cleanupAllowed!=='boolean')return false;
       const categories = ['transport','environment','edit-syntax','assertion','setup','command'];
       for (const e of s.episodes) {
         if (!digest(e.id) || !digest(e.operation) || !digest(e.signature) || !categories.includes(e.category) || !['suspected','required','authorized','resolved','retired','blocked'].includes(e.phase) || !Number.isSafeInteger(e.attempts) || e.attempts < 1 || e.attempts > 10000 || !Number.isSafeInteger(e.evidenceRevision) || e.evidenceRevision < 0 || typeof e.adviceRequested !== 'boolean' || typeof e.compound !== 'boolean' || e.authorizedOperation !== undefined && !digest(e.authorizedOperation)) return false;
         if (!Array.isArray(e.outcomes) || e.outcomes.length > 6 || e.outcomes.some(o => !['passed','failed','skipped','unrun','unknown'].includes(o)) || !Array.isArray(e.decisions) || e.decisions.length > 4) return false;
         for (const d of e.decisions) if (!digest(d.hypothesis) || !digest(d.remedy) || !Number.isSafeInteger(d.revision)) return false;
+        if(e.logicalStall!==undefined&&typeof e.logicalStall!=='boolean')return false;
         if (e.decision) for (const k of ['hypothesis','changed','nextAction','expectedEvidence','stopWhen'] as const) this.safe(e.decision[k]);
         if (e.overrideReason !== undefined) this.safe(e.overrideReason);
       }
       // Rebuild the allowlisted structure; do not preserve unknown sensitive fields.
-      this.state = { version:1, taskId:s.taskId, revision:s.revision, episodes:s.episodes.map(e => ({
-        id:e.id, operation:e.operation, signature:e.signature, category:e.category, attempts:e.attempts, phase:e.phase,
+      this.state = { version:1, taskId:s.taskId, revision:s.revision, scope:s.scope, resumeScope:s.resumeScope, cleanupAllowed:s.cleanupAllowed, episodes:s.episodes.map(e => ({
+        id:e.id, logicalStall:e.logicalStall, operation:e.operation, signature:e.signature, category:e.category, attempts:e.attempts, phase:e.phase,
         outcomes:[...e.outcomes], evidenceRevision:e.evidenceRevision, compound:e.compound, adviceRequested:e.adviceRequested,
         decisions:e.decisions.map(d=>({hypothesis:d.hypothesis,remedy:d.remedy,revision:d.revision})),
         ...(e.decision ? {decision:{hypothesis:e.decision.hypothesis,changed:e.decision.changed,nextAction:e.decision.nextAction,expectedEvidence:e.decision.expectedEvidence,stopWhen:e.decision.stopWhen}} : {}),
@@ -113,7 +129,10 @@ export class RecoveryController {
       return true;
     } catch {return false;}
   }
-  newTask(): void { this.state = {version:1,taskId:randomUUID(),revision:0,episodes:[]}; this.activeCalls.clear(); }
+  newTask(): void { this.state = {version:1,taskId:randomUUID(),revision:0,episodes:[],scope:this.state.scope,resumeScope:this.state.resumeScope,cleanupAllowed:this.state.cleanupAllowed}; this.activeCalls.clear(); }
+  userInput(text:string):void {const scope=userScope(this.state,text);this.state.scope=scope.scope;this.state.resumeScope=scope.resumeScope;this.state.cleanupAllowed=scope.cleanupAllowed;}
+  setScope(scope:NonNullable<ScopeState['scope']>):void {if(scope==='paused'&&this.state.scope!=='paused')this.state.resumeScope=this.state.scope??'active';this.state.scope=scope;this.state.cleanupAllowed=false;}
+  scopeRestriction(tool:string,input:Record<string,unknown>):string|undefined {return scopeBlock(this.state,tool,input);}
   private safe(value: unknown): string {
     if (typeof value !== 'string' || value.length > 300) throw new Error('Use short abstract recovery fields (maximum 300 characters), no raw diagnostics or private values.');
     assertAbstract(value, 'recovery decision'); return value;
@@ -136,7 +155,10 @@ export class RecoveryController {
   advice(id: string): boolean {const e=this.episode(id);if(e.adviceRequested)return false;e.adviceRequested=true;return true;}
   start(callId: string, tool: string, input: Record<string, unknown>, enforce: boolean): string | undefined {
     const op=operationKey(tool,input);if(!op)return;
-    const locked=this.state.episodes.find(e=>e.operation===op && ['required','blocked'].includes(e.phase));
+    const candidates=tool==='bash'?logicalChecks(input.command,input.cwd).map(c=>c.key):[];
+    // Prior v1 snapshots used the full cosmetic-normalized shell command as identity.
+    const legacy=tool==='bash'?legacyShellKey(input):undefined;if(legacy)candidates.push(legacy);
+    const locked=this.state.episodes.find(e=>(e.operation===op||candidates.includes(e.operation)) && ['required','blocked'].includes(e.phase));
     if(enforce && locked){this.blockedCalls.add(callId);if(this.blockedCalls.size>64)this.blockedCalls.delete(this.blockedCalls.values().next().value!);return locked.id;}
     this.blockedCalls.delete(callId);
     this.callTasks.set(callId,this.state.taskId);
@@ -149,6 +171,8 @@ export class RecoveryController {
     const startedTask=this.callTasks.get(callId);this.callTasks.delete(callId);
     if(this.blockedCalls.delete(callId) || startedTask && startedTask!==this.state.taskId)return;
     const observation=classify(tool,input,result);if(!observation)return;
+    const legacy=tool==='bash'?legacyShellKey(input):undefined;
+    if(legacy&&legacy!==observation.operation)for(const e of this.state.episodes)if(e.operation===legacy){e.operation=observation.operation;e.logicalStall=true;}
     const active=this.activeCalls.get(callId);this.activeCalls.delete(callId);
     const unsuccessful=observation.outcome==='failed'||observation.outcome==='unrun';
     if (observation.outcome==='passed' && (tool==='edit'||tool==='write')) this.state.revision++;
@@ -159,14 +183,20 @@ export class RecoveryController {
     }
     if(!unsuccessful) {
       const matched=this.state.episodes.slice().reverse().find(e=>e.operation===observation.operation && e.phase!=='retired');
-      if(matched){matched.outcomes.push(observation.outcome);matched.outcomes=matched.outcomes.slice(-6);if(observation.outcome==='passed') {matched.phase='resolved';matched.evidenceRevision=this.state.revision;}}
+      if(matched){matched.outcomes.push(observation.outcome);matched.outcomes=matched.outcomes.slice(-6);if(observation.outcome==='passed') {for(const item of this.state.episodes)if(item.operation===observation.operation&&item.phase!=='retired'){item.phase='resolved';item.evidenceRevision=this.state.revision;}}}
       return;
     }
-    for (const prior of this.state.episodes) if(prior.operation===observation.operation && prior.signature!==observation.signature && !['resolved','retired'].includes(prior.phase)) prior.phase='retired';
-    let e=this.state.episodes.find(e=>e.operation===observation.operation && e.signature===observation.signature && !['resolved','retired'].includes(e.phase));
-    if(!e){e={id:hash(randomUUID()),operation:observation.operation,signature:observation.signature,category:observation.category,attempts:0,phase:'suspected',outcomes:[],evidenceRevision:this.state.revision,compound:observation.compound,adviceRequested:false,decisions:[]};this.state.episodes.push(e);this.state.episodes=this.state.episodes.slice(-8);}
+    const logical=tool==='bash'&&logicalChecks(input.command,input.cwd).length===1;
+    for (const prior of this.state.episodes) {
+      if(prior.operation!==observation.operation||['resolved','retired'].includes(prior.phase))continue;
+      if(logical ? prior.evidenceRevision!==this.state.revision : prior.signature!==observation.signature)prior.phase='retired';
+    }
+    let e=this.state.episodes.find(e=>e.operation===observation.operation && (logical ? e.logicalStall&&e.evidenceRevision===this.state.revision : e.signature===observation.signature) && !['resolved','retired'].includes(e.phase));
+    if(!e){e={id:hash(randomUUID()),operation:observation.operation,signature:observation.signature,category:observation.category,attempts:0,phase:'suspected',logicalStall:logical,outcomes:[],evidenceRevision:this.state.revision,compound:observation.compound,adviceRequested:false,decisions:[]};this.state.episodes.push(e);this.state.episodes=this.state.episodes.slice(-8);}
+    if(logical){e.signature=observation.signature;e.category=observation.category;}
     e.attempts=Math.min(10000,e.attempts+1);e.outcomes.push(observation.outcome);e.outcomes=e.outcomes.slice(-6);
     if(e.attempts>=threshold){const notify=e.phase==='suspected';e.phase='required';return notify ? e : undefined;}
+
   }
   summary() { return {...this.snapshot(), episodes:this.state.episodes.map(e=>({...e, evidenceFresh:e.evidenceRevision===this.state.revision, revisionScope:'observed successful edits/writes only; external changes unknown'}))}; }
 }
