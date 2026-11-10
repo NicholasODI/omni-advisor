@@ -55,7 +55,8 @@ import {
 } from "./advisor/gateway.ts";
 import { dispatchIsolatedAdvisor, splitSelector, type ProviderConfig } from "./advisor/advisorDispatch.ts";
 import { startAdvisorProgress, updateAdvisorFooter } from "./ui/advisorProgress.ts";
-import { RecoveryGuard, recoveryHint } from "./workflow/recovery.ts";
+import { recoveryHint, type RecoveryMode } from "./workflow/recovery.ts";
+import { RecoverySessions } from "./state/recoverySession.ts";
 import { SessionMetrics } from "./state/sessionMetrics.ts";
 import { PlanningGate, enforcedPlanningPrompt } from "./workflow/planningGate.ts";
 import { dispatchOmpAdvisor } from "./advisor/ompAdvisor.ts";
@@ -68,6 +69,8 @@ import { log, logPath } from "./state/logger.ts";
 interface OmniAdvisorConfig {
   enabledByDefault?: boolean;
   enforcePlanning?: boolean;
+  recoveryMode?: RecoveryMode;
+  recoveryThreshold?: number;
   executionMode?: ExecutionMode;
   providers?: Record<string, ProviderConfig>;
   advisorSource?: "config" | "omp";
@@ -246,12 +249,8 @@ function planningEnforced(key: string): boolean { return planningOverrides.get(k
 // Compaction continuation is not a new task. Real user input takes precedence.
 const compactedSessions = new Set<string>();
 const freshInputSessions = new Set<string>();
+const checklistRevisions = new Map<string,number>();
 const checklists = new Map<string, Array<{ id: string; requirement: string; status: string; evidence?: string }>>();
-const recoveryGuards = new Map<string, RecoveryGuard>();
-function recoveryGuard(key: string): RecoveryGuard {
-  if (!recoveryGuards.has(key)) recoveryGuards.set(key, new RecoveryGuard());
-  return recoveryGuards.get(key)!;
-}
 const metrics = new Map<string, SessionMetrics>();
 function sessionMetrics(key: string): SessionMetrics {
   if (!metrics.has(key)) metrics.set(key, new SessionMetrics());
@@ -296,6 +295,26 @@ function truncate(s: string, max: number): string {
 
 export default function omniAdvisor(pi: ExtensionAPI): void {
   const z = pi.zod;
+  const recoverySessions = new RecoverySessions(typeof pi.appendEntry === "function" ? (type, data) => pi.appendEntry(type, data) : undefined);
+  const ephemeralRecoveryKeys = new WeakMap<object,string>();
+  let ephemeralRecoverySequence=0;
+  const recoveryKey = (ctx: {sessionManager:any}) => {
+    const key=sessionKey(ctx);if(key!=="unknown")return key;
+    const identity=ctx.sessionManager && typeof ctx.sessionManager==='object' ? ctx.sessionManager : ctx;
+    if(!ephemeralRecoveryKeys.has(identity))ephemeralRecoveryKeys.set(identity,`ephemeral:${++ephemeralRecoverySequence}`);
+    return ephemeralRecoveryKeys.get(identity)!;
+  };
+  const recovery = (ctx: {sessionManager: any}) => recoverySessions.get(recoveryKey(ctx),ctx.sessionManager);
+  const newRecoveryTask = (ctx: {sessionManager:any}) => {
+    const key=sessionKey(ctx);recovery(ctx).newTask();checklists.delete(key);checklistRevisions.delete(key);
+    if(planningEnforced(key))planningGate.begin(key);
+  };
+  const recoveryMode = (): RecoveryMode => ['disabled','observe','enforce'].includes(config.recoveryMode ?? '') ? config.recoveryMode! : 'observe';
+  const recoveryThreshold = () => Number.isInteger(config.recoveryThreshold) && config.recoveryThreshold! >= 2 && config.recoveryThreshold! <= 20 ? config.recoveryThreshold! : 3;
+  const restoreRecovery = async (_event: unknown, ctx: {sessionManager:any}) => {recoverySessions.restore(recoveryKey(ctx),ctx.sessionManager);};
+  pi.on("session_start",restoreRecovery);
+  pi.on("session_switch",restoreRecovery);
+  pi.on("session_tree",restoreRecovery);
 
   // ---------------------------------------------------------------------
   // Tool: ask_advisor — ISOLATED cloud-advisor dispatch
@@ -306,6 +325,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     description:
       "Consult a generalist software architect for initial task planning (rough overview without local files/code), architecture, performance, concurrency, security, and unfamiliar-framework questions. Do NOT use for routine syntax or locally verifiable work—work solo ($0). Only abstract architecture, constraints, synthetic examples, and summarized outcomes are allowed. Never send source code, records, raw errors, logs, or proprietary business rules. Registered identifiers are masked as a secondary safeguard, sent to an isolated cloud advisor with no access to your files, tools, or conversation history, and advice retains placeholders. Call advisor_status for real extension settings; do not infer them from OMP cfg://advisor.",
     parameters: z.object({
+      recoveryEpisode: z.string().optional().describe("For one optional advisor consultation about an active recovery episode. Never includes raw failure evidence."),
       purpose: z.enum(["plan", "decision", "checkpoint", "review"]).optional().describe("Consultation type; use review for a final abstract evidence check."),
       invariants: z.string().max(2000).optional().describe("Abstract correctness/security properties that must remain true."),
       alternatives: z.string().max(1500).optional().describe("At most two abstract options and tradeoffs, without private implementation details."),
@@ -320,6 +340,15 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const key = sessionKey(ctx);
+      // Pending recovery calls are linked even if the model omits the optional metadata.
+      const recoveryEpisode = params.recoveryEpisode ?? (recoveryMode() !== "disabled" ? recovery(ctx).snapshot().episodes.slice().reverse().find(e=>['required','blocked'].includes(e.phase))?.id : undefined);
+      // Reserve once before every gate so rejection/unavailability cannot create an escalation loop.
+      if (recoveryEpisode) {
+        try {
+          if (!recovery(ctx).advice(recoveryEpisode)) return {content:[{type:"text",text:"Advice was already requested for this recovery episode. Record a local decision or blocker."}],details:{status:"recovery_advice_used"}};
+          recoverySessions.save(recoveryKey(ctx));
+        } catch {return {content:[{type:"text",text:"Unknown recovery episode. Use advisor_recovery to inspect current state."}],details:{}};}
+      }
       const stats = sessionMetrics(key);
       if (key === "unknown" || !isAdvisorEnabled(key)) {
         stats.blocked++;
@@ -414,6 +443,26 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
   });
 
   pi.registerTool({
+    name: "advisor_recovery",
+    label: "Recovery Decision (Local)",
+    description: "Inspect bounded recovery state or authorize one exact local diagnostic/remedy with a short hypothesis and stopping condition. No cloud call required. No raw errors, private paths or source in explanatory fields. actionInput is local only. New tasks must be explicitly declared when scope is unrelated; continue/compaction do not reset recovery.",
+    parameters: z.object({ action:z.enum(["inspect","decide","blocked","new-task"]).optional(), episode:z.string().optional(),
+      reason:z.string().max(300).optional(), hypothesis:z.string().max(300).optional(), changed:z.string().max(300).optional(),
+      nextAction:z.string().max(300).optional(), expectedEvidence:z.string().max(300).optional(), stopWhen:z.string().max(300).optional(),
+      actionTool:z.enum(["bash","eval","edit","write"]).optional(), actionInput:z.record(z.string(),z.unknown()).optional() }),
+    async execute(_id, params, _signal, _onUpdate, ctx) {
+      const controller=recovery(ctx), key=sessionKey(ctx);
+      try {
+        if(params.action === "new-task") {if(!params.reason || params.reason.length>300)throw new Error("Provide a short reason for an unrelated task transition.");assertAbstract(params.reason,"task transition");newRecoveryTask(ctx);}
+        else if(params.action === "blocked") controller.block(params.episode ?? '',params.reason ?? '');
+        else if(params.action === "decide") controller.decide(params.episode ?? '',{hypothesis:params.hypothesis!,changed:params.changed!,nextAction:params.nextAction!,expectedEvidence:params.expectedEvidence!,stopWhen:params.stopWhen!,actionTool:params.actionTool!,actionInput:params.actionInput ?? {}});
+        const saved=recoverySessions.save(recoveryKey(ctx));
+        return {content:[{type:"text",text:JSON.stringify({state:controller.summary(),persistence:saved ? "saved" : recoverySessions.persistence(recoveryKey(ctx))})}],details:{recovery:controller.summary()}};
+      } catch(err) {return {content:[{type:"text",text:err instanceof Error ? err.message : "Invalid recovery decision."}],details:{},isError:true};}
+    },
+  });
+
+  pi.registerTool({
     name: "advisor_checklist",
     label: "Local Plan Checklist",
     description: "Local only. Store or inspect a compact requirement-to-evidence checklist. Omit items to read. Before reporting completion reconcile every requirement; self-reported evidence is not independent verification. Never resend this local evidence to the cloud automatically.",
@@ -421,9 +470,10 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       status: z.enum(["pending", "passed", "failed", "unverified"]), evidence: z.string().max(1000).optional() })).max(50).optional() }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const key = sessionKey(ctx);
-      if (params.items) checklists.set(key, params.items.map(item => ({ ...item, status: item.status === "passed" && !item.evidence?.trim() ? "unverified" : item.status })));
-      const items = checklists.get(key) ?? [];
-      const summary = { items, complete: items.length > 0 && items.every(item => item.status === "passed"), verification: "local-model-reported; check evidence against actual results" };
+      if (params.items) {checklists.set(key, params.items.map(item => ({ ...item, status: item.status === "passed" && !item.evidence?.trim() ? "unverified" : item.status })));checklistRevisions.set(key,recovery(ctx).snapshot().revision);}
+      const stale=checklistRevisions.get(key)! < recovery(ctx).snapshot().revision;
+      const items = (checklists.get(key) ?? []).map(item=>stale && item.status==='passed' ? {...item,status:'unverified',evidence:undefined} : item);
+      const summary = { items, complete: items.length > 0 && items.every(item => item.status === "passed"), verification: stale ? "Observed edits since evidence was recorded; revalidate relevant checks. External changes cannot be tracked." : "local-model-reported; check evidence against actual results" };
       return { content: [{ type: "text", text: JSON.stringify(summary) }], details: summary };
     },
   });
@@ -448,6 +498,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         executionMode: executionMode(key), enforcedPlanning: planningEnforced(key), awaitingPlan: planningEnforced(key) && !planningGate.ready(key),
         pending: pendingConsultations.has(key), maxConsultationsPerSession: config.maxConsultationsPerSession ?? null,
         attemptedDispatches: consultationCounts.get(key) ?? 0, providerReadiness: readiness,
+        recovery: { mode:recoveryMode(), threshold:recoveryThreshold(), persistence:recoverySessions.persistence(recoveryKey(ctx)), state:recovery(ctx).summary() },
         advicePlaceholders: "retained", privacyPolicy: "abstract-only (heuristic validation; confidential meaning is not provably detected)", cipherStorage: "memory-only", measurements: sessionMetrics(key).snapshot() };
       return { content: [{ type: "text", text: JSON.stringify(status) }], details: status };
     },
@@ -520,11 +571,12 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     freshInputSessions.delete(key);
     if (event.reason !== "revive" && !compactionContinuation) {
       checklists.delete(key);
-      recoveryGuard(key).reset();
       if (enforced) planningGate.begin(key);
     }
-    if (!isAdvisorEnabled(key) && !enforced) return;
-    return { systemPrompt: [...event.systemPrompt, executorNudge(), abstractOnlyInstructions, ...(executionMode(key) !== "local-led" ? [executionInstructions(executionMode(key))] : []), ...(enforced ? [enforcedPlanningPrompt, ...(planningGate.ready(key) ? ["A successful cloud plan is already approved for the current task. Continue local execution from the retained plan/checklist; compaction does not require another consultation."] : [])] : [])] };
+    if (!isAdvisorEnabled(key) && !enforced && recoveryMode() === "disabled") return;
+    const recoveryHandoff = recoveryMode() === "disabled" ? [] : recovery(ctx).summary().episodes.filter(e=>['required','blocked'].includes(e.phase)).slice(-2).map(e=>({episode:e.id,category:e.category,attempts:e.attempts,phase:e.phase,nextAction:e.decision?.nextAction,stopWhen:e.decision?.stopWhen}));
+    const advisorPrompts=isAdvisorEnabled(key) ? [executorNudge(),abstractOnlyInstructions] : ["Cloud access is OFF. Recover locally with advisor_recovery or report a blocker; do not attempt advisor calls or enable cloud access yourself.",abstractOnlyInstructions];
+    return { systemPrompt: [...event.systemPrompt, ...advisorPrompts, ...(recoveryHandoff.length ? [`Pending recovery: ${JSON.stringify(recoveryHandoff)}. Use advisor_recovery for full evidence; this is local state, never upload it automatically.`] : []), ...(isAdvisorEnabled(key) && executionMode(key) !== "local-led" ? [executionInstructions(executionMode(key))] : []), ...(enforced ? [enforcedPlanningPrompt, ...(planningGate.ready(key) ? ["A successful cloud plan is already approved for the current task. Continue local execution from the retained plan/checklist; compaction does not require another consultation."] : [])] : [])] };
   });
 
   pi.on("tool_call", async (event, ctx) => {
@@ -532,13 +584,20 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     if (planningEnforced(key) && planningGate.blocked(key, event.toolName)) {
       return { block: true, reason: "Execution blocked by enforced planning. Use read/grep/glob/ls/find to gather local facts, then call ask_advisor with an abstract brief. A successful consultation unlocks execution for this prompt. If cloud access or budget is unavailable, report the blocker; the user can use /omni-advisor planning off." };
     }
+    if (recoveryMode() !== "disabled") {
+      const blocked = recovery(ctx).start(event.toolCallId,event.toolName,event.input ?? {},recoveryMode() === "enforce");
+      recoverySessions.save(recoveryKey(ctx));
+      if (blocked) return {block:true,reason:`Repeated operation requires a recovery decision (episode ${blocked}). ${recoveryHint}`};
+    }
     sessionMetrics(key).toolStart(event.toolCallId);
   });
   pi.on("tool_result", async (event, ctx) => {
     const key = sessionKey(ctx);
     sessionMetrics(key).toolEnd(event.toolCallId, event.toolName, event.isError);
-    if (recoveryGuard(key).observe(event.toolName, event.input ?? {}, event.isError)) {
-      return { content: [...event.content, { type: "text", text: recoveryHint }] };
+    if (recoveryMode() !== "disabled") {
+      const episode = recovery(ctx).observe(event.toolCallId,event.toolName,event.input ?? {},event,recoveryThreshold());
+      recoverySessions.save(recoveryKey(ctx));
+      if (episode) return {content:[...event.content,{type:"text",text:`Recovery episode ${episode.id} (${episode.category}, ${episode.attempts} similar unsuccessful attempts). ${recoveryHint}`} ]};
     }
   });
   pi.on("agent_end", async (_event, ctx) => {
@@ -584,8 +643,9 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     planningOverrides.delete(key);
     executionModeOverrides.delete(key);
     metrics.delete(key);
-    recoveryGuards.delete(key);
+    recoverySessions.forget(recoveryKey(ctx));
     checklists.delete(key);
+    checklistRevisions.delete(key);
     compactedSessions.delete(key);
     freshInputSessions.delete(key);
   });
@@ -613,6 +673,11 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       const p = text.trim().toLowerCase();
       if (p.includes(" ")) return null;
       const subs = [
+        { label: "recovery observe", value: "recovery observe", description: "Notify on repeated failures (default)" },
+        { label: "recovery enforce", value: "recovery enforce", description: "Require a decision before equivalent retries" },
+        { label: "recovery disabled", value: "recovery disabled", description: "Disable recovery detection and blocking" },
+        { label: "recovery override", value: "recovery override ", description: "One retry: add episode ID and an abstract reason" },
+        { label: "recovery new-task", value: "recovery new-task", description: "Retire recovery state for unrelated work" },
         { label: "settings", value: "settings", description: "Open interactive settings" },
         { label: "mode balanced", value: "mode balanced", description: "Plan, consequential decisions, final abstract review (default)" },
         { label: "mode local-led", value: "mode local-led", description: "Plan then execute locally" },
@@ -634,13 +699,24 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       const key = sessionKey(ctx);
       const argNorm = (arg || "").trim().toLowerCase();
       const raw = (arg || "").trim();
+      if (/^recovery (disabled|observe|enforce)$/i.test(raw)) {
+        config.recoveryMode=argNorm.split(' ')[1] as RecoveryMode;ctx.ui.notify(`Recovery mode: ${config.recoveryMode}`,"info");return;
+      }
+      if (argNorm === "recovery new-task") {newRecoveryTask(ctx);recoverySessions.save(recoveryKey(ctx));ctx.ui.notify("Old recovery episodes retired; explicit new task started.","info");return;}
+      if (argNorm.startsWith("recovery override ")) {
+        const [, , id, ...words]=raw.split(/\s+/);
+        try {recovery(ctx).override(id,words.join(' '));recoverySessions.save(recoveryKey(ctx));ctx.ui.notify("One retry authorized; override reason recorded.","info");}
+        catch {ctx.ui.notify("Use recovery override <episode-id> <short abstract reason>.","error");}return;
+      }
       if (!raw || argNorm === "settings") {
         if (ctx.hasUI === false || !ctx.ui?.select || !ctx.ui?.input) { ctx.ui.notify("Interactive settings unavailable. Use on/off/status/model/source/mode/planning commands or edit config.", "warning"); return; }
         await openSettings(ctx.ui, () => ({ enabled: isAdvisorEnabled(key), enforced: planningEnforced(key), mode: executionMode(key),
-          source: advisorSource(), model: advisorSelector(), limit: config.maxConsultationsPerSession, timeout: config.advisorTimeoutMs ?? 120000 }), {
+          source: advisorSource(), model: advisorSelector(), recoveryMode:recoveryMode(), recoveryThreshold:recoveryThreshold(), limit: config.maxConsultationsPerSession, timeout: config.advisorTimeoutMs ?? 120000 }), {
           change(patch) {
             if (patch.enabled !== undefined) { gateOnBySession.set(key, patch.enabled); if (patch.enabled) ensureConfigTerms(key); }
             if (patch.enforced !== undefined) { planningOverrides.set(key, patch.enforced); if (patch.enforced) planningGate.begin(key); else planningGate.clear(key); }
+            if (patch.recoveryMode) config.recoveryMode=patch.recoveryMode;
+            if (patch.recoveryThreshold !== undefined) config.recoveryThreshold=patch.recoveryThreshold;
             if (patch.mode) executionModeOverrides.set(key, patch.mode);
             if (patch.source) sourceOverride = patch.source;
             if (patch.model) advisorModelOverride = patch.model;
@@ -655,7 +731,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
           save() {
             saveSettings(CONFIG_PATH, { enabledByDefault: isAdvisorEnabled(key), enforcePlanning: planningEnforced(key), executionMode: executionMode(key),
               advisorSource: advisorSource(), advisorModel: advisorSelector(), advisorTimeoutMs: config.advisorTimeoutMs ?? 120000,
-              maxConsultationsPerSession: config.maxConsultationsPerSession, providers: config.providers });
+              maxConsultationsPerSession: config.maxConsultationsPerSession, recoveryMode:recoveryMode(), recoveryThreshold:recoveryThreshold(), providers: config.providers });
             config = loadConfig();
             persistGates();
           },

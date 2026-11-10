@@ -31,6 +31,8 @@ New extension request/response logs record sizes and metadata rather than payloa
 
 The config file can contain sensitive raw `semanticTerms`; protect it accordingly. Store API keys in environment variables, not the config or repository. Protect any OMP session transcripts and host logs too: this extension does not control how the host records tool arguments or user messages.
 
+Recovery state is persisted in local OMP custom session entries. It stores hashed operation/diagnostic fingerprints and short validated abstract decisions, never raw command arguments, diagnostics, code, or paths. Hashes are fingerprints, not encryption; dictionary inference may be possible. Natural-language confidentiality still cannot be guaranteed. Context-forge handoff is local and optional; stored recovery state is never automatically sent to the advisor.
+
 ## What these safeguards cannot prove
 
 Heuristics cannot reliably recognize confidential meaning in prose, unregistered identifiers, encoded/obfuscated data, or every novel secret format. They can also reject harmless content. Rephrase abstractly instead of assuming that successful validation proves safety.

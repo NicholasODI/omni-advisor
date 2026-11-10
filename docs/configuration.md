@@ -94,6 +94,8 @@ Set `stream: false` if an endpoint rejects streaming or OpenAI `stream_options`.
 |---|---|---|
 | `enabledByDefault` | `false` | Cloud access for sessions without an explicit gate override |
 | `executionMode` | `balanced` | `balanced`, `local-led`, or `cloud-led` |
+| `recoveryMode` | `observe` | `disabled`, `observe`, or selective retry `enforce` |
+| `recoveryThreshold` | `3` | Similar failures before a decision, integer 2–20 |
 | `enforcePlanning` | `false` | Require initial successful advice before execution tools |
 | `advisorSource` | `config` | Explicit endpoint/legacy discovery, or `omp` registry |
 | `advisorModel` | `codex-lb/gpt-6.1-sol` | `provider/model-id`; configure a provider you can use |

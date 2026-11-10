@@ -4,5 +4,7 @@
   "advisorFocus": "",
   "semanticTerms": {},
   "enforcePlanning": false,
-  "executionMode": "balanced"
+  "executionMode": "balanced",
+  "recoveryMode": "observe",
+  "recoveryThreshold": 3
 }

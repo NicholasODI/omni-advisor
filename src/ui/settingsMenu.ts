@@ -1,7 +1,8 @@
+import type { RecoveryMode } from '../workflow/recovery.ts';
 import type { ExecutionMode } from '../workflow/executionMode.ts';
 export interface SettingsState {
   enabled: boolean; enforced: boolean; mode: ExecutionMode; source: 'config' | 'omp';
-  model: string; limit?: number; timeout: number;
+  model: string; limit?: number; timeout: number; recoveryMode?: RecoveryMode; recoveryThreshold?: number;
 }
 interface MenuUI {
   select(title: string, options: string[]): Promise<string | undefined>;
@@ -19,7 +20,7 @@ export async function openSettings(ui: MenuUI, get: () => SettingsState, actions
     const s = get();
     const options = [`Cloud access: ${s.enabled ? 'ON' : 'OFF'}`, `Workflow: ${s.mode}`, `Planning enforcement: ${s.enforced ? 'ON' : 'OFF'}`,
       `Advisor source: ${s.source}`, `Advisor model: ${s.model}`, 'Provider settings',
-      `Limits: ${s.limit ?? 'unlimited'} calls; ${s.timeout / 1000}s timeout`, 'Save current choices as defaults', 'Close'];
+      `Limits: ${s.limit ?? 'unlimited'} calls; ${s.timeout / 1000}s timeout`, 'Save current choices as defaults', 'Close', `Recovery: ${s.recoveryMode ?? 'observe'}; threshold ${s.recoveryThreshold ?? 3}`];
     const choice = await ui.select('Omni Advisor Settings — arrows + Enter; Esc closes', options);
     if (!choice || choice === 'Close') return;
     const index = options.indexOf(choice);
@@ -57,6 +58,15 @@ export async function openSettings(ui: MenuUI, get: () => SettingsState, actions
       const ms = Number(timeout) * 1000;
       if (!Number.isFinite(ms) || ms < 1000 || ms > 300000) { ui.notify('Timeout must be 1–300 seconds.', 'error'); continue; }
       actions.change({ limit: n, timeout: ms });
+    }
+    if (index === 9) {
+      const mode=await ui.select('Recovery control', ['disabled','observe','enforce']);
+      if (!mode) continue;
+      const threshold=await ui.input('Similar failures before recovery (2–20)',String(s.recoveryThreshold ?? 3));
+      if(threshold===undefined)continue;
+      const n=Number(threshold);
+      if(!Number.isInteger(n)||n<2||n>20){ui.notify('Enter an integer from 2 to 20.','error');continue;}
+      actions.change({recoveryMode:mode as RecoveryMode,recoveryThreshold:n});
     }
     if (index === 7) {
       try { actions.save(); ui.notify('Defaults saved. Current session choices remain active.', 'info'); }

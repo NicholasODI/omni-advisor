@@ -42,4 +42,8 @@ assert.match(executionInstructions('cloud-led'),/Acceptance criteria remain bind
 assert.equal(executionInstructions('local-led'),'');
 assert.match(toolResponseFrame('Plan','cloud-led'),/After this batch/);
 assert.doesNotMatch(advisorBlock(),/Cloud-led mode/);
+
+let recoveryMenu=0;
+await openSettings({select:async(title,options)=>title==='Recovery control' ? 'enforce' : options[recoveryMenu++===0?9:8],input:async()=> '4',notify(){}},()=>state,{change:p=>state={...state,...p},ompModels:()=>[],provider:async()=>{},save:()=>{}});
+assert.equal(state.recoveryMode,'enforce');assert.equal(state.recoveryThreshold,4);
 console.log('Settings/mode tests passed: menu navigation, OMP selection, limits, cancellation, provider validation, atomic persistence, adaptive batch prompts.');
