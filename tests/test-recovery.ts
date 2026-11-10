@@ -117,4 +117,8 @@ const unrun=new RecoveryController();
 for(let i=0;i<3;i++)unrun.observe(String(i),'bash',input,{details:{exitCode:0},content:[{type:'text',text:'0 tests'}]});
 assert.equal(unrun.snapshot().episodes[0].phase,'required');assert.deepEqual(unrun.snapshot().episodes[0].outcomes,['unrun','unrun','unrun']);
 assert.equal(classify('edit',{path:'worker'},fail('This edit anchors to lines 13 of temporary-file which exceed the display column cap.'))!.signature,classify('edit',{path:'worker'},fail('This edit anchors to lines 22 of other-file which exceed the display column cap.'))!.signature);
+const timeoutResult={details:{timedOut:true},content:[{type:'text',text:'3 passed before deadline'}]};
+assert.equal(classify('bash',input,timeoutResult)!.outcome,'unrun');assert.equal(classify('bash',input,timeoutResult)!.category,'environment');
+const timeouts=new RecoveryController();for(let n=0;n<3;n++)timeouts.observe(String(n),'bash',input,timeoutResult);
+assert.equal(timeouts.snapshot().episodes[0].phase,'required');
 console.log('Persistent recovery tests passed: classification, signatures, decisions, selective one-shot enforcement, persistence/resume, bounded privacy, modes, optional advice, overrides and task transitions.');

@@ -46,15 +46,17 @@ export function classify(tool: string, input: Record<string, unknown>, result: {
   const failedCount = tests && count(tests.failed) && tests.failed > 0;
   const failedLine = text.split('\n').find(line => /^\s*(?:FAIL(?:ED)?\b|[✖×]\s)|^\s*(?:E\s+)?(?:AssertionError|SyntaxError|TypeError|ReferenceError|ECONNREFUSED|ENOENT|command not found|No module named|cannot find module)\b|^\s*(?:=+\s*)?\d+ failed\b|^\s*(?:ℹ\s*)?fail(?:ed)?\s*[:= ]\s*[1-9]\d*|^RESULT pass=\d+ fail=[1-9]\d*|^\s*(?:EXIT|GATE_EXIT|PYTEST_EXIT)=([1-9]\d*)/i.test(line));
   const failed = !!result.isError || (exit !== undefined && exit !== 0) || failedCount || !!failedLine;
-  let outcome: Outcome = failed ? 'failed' : 'unknown';
+  const timedOut=d.timedOut===true;
+  let outcome: Outcome = timedOut ? 'unrun' : failed ? 'failed' : 'unknown';
   // A zero exit without runner evidence is not proof that intended tests executed.
-  if (!failed && tests && count(tests.passed) && count(tests.failed)) outcome = tests.passed > 0 ? 'passed' : tests.skipped > 0 ? 'skipped' : 'unrun';
-  else if (!failed && /\b0 (?:tests?|passed)\b/.test(text)) outcome = 'unrun';
-  else if (!failed && /\b[1-9]\d* passed\b|^\s*(?:ℹ\s*)?pass [1-9]\d*\s*$/m.test(text)) outcome = 'passed';
-  else if (!failed && (tool === 'edit' || tool === 'write')) outcome = 'passed';
+  if (!failed && !timedOut && tests && count(tests.passed) && count(tests.failed)) outcome = tests.passed > 0 ? 'passed' : tests.skipped > 0 ? 'skipped' : 'unrun';
+  else if (!failed && !timedOut && /\b0 (?:tests?|passed)\b/.test(text)) outcome = 'unrun';
+  else if (!failed && !timedOut && /\b[1-9]\d* passed\b|^\s*(?:ℹ\s*)?pass [1-9]\d*\s*$/m.test(text)) outcome = 'passed';
+  else if (!failed && !timedOut && (tool === 'edit' || tool === 'write')) outcome = 'passed';
   let category: FailureCategory = outcome === 'unrun' ? 'setup' : 'command';
-  const diagnostic = failedLine ?? (typeof d.error?.code === 'string' ? d.error.code : failed ? text.split('\n').find(l => l.trim()) ?? 'tool failure' : outcome);
+  const diagnostic = timedOut ? 'execution deadline expired before completion' : failedLine ?? (typeof d.error?.code === 'string' ? d.error.code : failed ? text.split('\n').find(l => l.trim()) ?? 'tool failure' : outcome);
   if (d.transportError === true) category = 'transport';
+  else if (timedOut) category = 'environment';
   else if ((tool === 'edit' || tool === 'write') && failed) category = 'edit-syntax';
   else if (/ECONNREFUSED|ECONNRESET|ETIMEDOUT|ENOTFOUND|ENOENT|not found|not recognized as|No module named|cannot find module|unavailable/i.test(diagnostic)) category = 'environment';
   else if (/SyntaxError|TypeError|ReferenceError|fixture|setup|collection|collecting/i.test(diagnostic)) category = 'setup';
