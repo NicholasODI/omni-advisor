@@ -13,7 +13,6 @@ assert.equal(planningText({ objective: 'Worker', questions: 'Why?', i: 'host int
 const metrics = new SessionMetrics(); metrics.begin(100); metrics.toolStart('a', 120); metrics.toolEnd('a','read',false,140); metrics.result(true,30,{input:20,output:10}); metrics.result(false,5); metrics.blocked++; metrics.end(200);
 assert.deepEqual([metrics.snapshot().agentWallMs, metrics.snapshot().cumulativeToolMs, metrics.snapshot().cloudLatencyMs], [100,20,35]);
 assert.equal(metrics.snapshot().locallyBlocked,1); assert.equal(metrics.snapshot().responsesWithoutUsage,1);
-for (let i=0;i<3;i++) assert.equal(metrics.toolEnd(String(i),'bash',true),i===2);
 const tools: any = {}, hooks: any = {};
 const schema: any = new Proxy(() => schema,{get:()=>schema,apply:()=>schema});
 extension({ zod:schema, registerTool:(t:any)=>tools[t.name]=t, registerCommand:()=>{}, on:(n:string,f:any)=>hooks[n]=f } as any);

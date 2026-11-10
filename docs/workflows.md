@@ -63,10 +63,10 @@ Compaction in the same running session preserves approval and the local checklis
 
 ## Recovery and stopping
 
-The local prompt asks the model to keep settled decisions closed unless evidence changes, avoid rerunning passing checks without reason, and stop when required acceptance criteria are supported.
+The executor keeps settled decisions closed unless evidence changes and stops when required acceptance criteria are supported. Repetitive failures now use [persistent, evidence-aware recovery control](recovery.md).
 
-Repeated design reconsideration should lead to one targeted local check or one abstract consultation. For testing loops, three reported command/evaluation errors—or three reported edit/write errors on the same file—produce one reassessment hint per task, even if reads/edits occur between failures. The hint survives compaction and resets for a new task.
+The default is **observe**: record similar failures and request one short decision at a configurable threshold. Optional **enforce** mode blocks only the repeated operation while allowing inspection and a recorded one-shot diagnostic/remedy. Cloud advice is optional; the local model can record a hypothesis or external blocker without network access. State survives compaction/resume and resets only for an explicit unrelated-task transition.
 
-The recovery question is **whether to continue, simplify verification, or stop**, not merely how to fix the next harness failure. Product defects must be distinguished from harness/tooling defects. If the user will manually verify the browser, the executor should not build a replacement browser simulator.
+Recovery never weakens acceptance criteria or runs broader tests automatically. Required final gates remain required. See [recovery controls and limitations](recovery.md) for persistence, overrides, and the optional context-forge handoff surface.
 
-This is bounded prompt guidance, not automatic execution of a cloud call or a guarantee of model compliance. Detection uses host-reported tool errors; failed assertions inside a successful command may evade it. If advice is unavailable, use a smaller meaningful existing check or report the unverified limit without bypassing enforcement.
+Explicit stop and analysis-only requests now have [persistent tool-authorization controls](recovery.md#user-authorization-takes-precedence). Todo reminders do not resume stopped work. Wrap-up requests freeze scope in guidance and restrict unrequested destructive cleanup; required final verification is still required.

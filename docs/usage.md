@@ -15,6 +15,10 @@
 | `/omni-advisor source omp` / `source config` | Switch provider source |
 | `/omni-advisor mode balanced` / `mode local-led` / `mode cloud-led` | Select workflow for the session |
 | `/omni-advisor planning on` / `planning off` | Enable or disable planning enforcement |
+| `/omni-advisor recovery disabled` / `observe` / `enforce` | Set recovery mode (process override; save in menu for defaults) |
+| `/omni-advisor scope active` / `paused` / `analysis` / `closure` | Set explicit execution authorization for this session |
+| `/omni-advisor recovery new-task` | Retire old recovery episodes for unrelated work |
+| `/omni-advisor recovery override <id> <reason>` | Record a user-authorized single retry |
 | `/omni-usage` | Show token totals, consultation counts, timing, and cached quota if available |
 | `/omni-cipher-status` | Show placeholder metadata, not raw mappings |
 | `/omni-cipher-clear` | Clear mappings and usage; preserve logs |
@@ -49,9 +53,13 @@ Only one consultation per session can be pending. There is no count limit by def
 
 Returns actual extension settings, configuration readiness, planning state, optional limit (`null` = unlimited), counts, and timing. Local only: no authentication refresh or network probe, and no credential values or endpoint URLs. Configuration presence does not establish connectivity. OMP's `cfg://advisor` is a separate feature.
 
+### `advisor_recovery`
+
+Inspect persisted bounded failure evidence, record a short recovery decision and one exact local action, report a blocker, or explicitly start an unrelated task. No network is required. See [recovery control](recovery.md). `ask_advisor` accepts optional local-only `recoveryEpisode` metadata for one advisor request per episode.
+
 ### `advisor_checklist`
 
-Store up to 50 requirement IDs, requirements, statuses, and evidence references. Omit `items` to read; supplying items replaces the checklist. A passed item without evidence becomes unverified. This is local-model-reported evidence, not an independent correctness proof, and is never automatically dispatched.
+Store up to 50 requirement IDs, requirements, statuses, and evidence references. Omit `items` to read; supplying items replaces the checklist. A passed item without evidence becomes unverified. This is local-model-reported evidence, not an independent correctness proof, and is never automatically dispatched. When recovery tracking observes a successful edit/write after checklist evidence was recorded, passed entries are conservatively returned as unverified; external changes remain unknown.
 
 ### `register_masked_terms`
 

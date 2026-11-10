@@ -9,7 +9,7 @@ Give your local model a cloud planning partner. The local model inspects files, 
 - **Flexible providers:** reuse OMP's models and credentials, or configure OpenAI-compatible and native Anthropic endpoints.
 - **Interactive settings:** choose models, workflow, planning enforcement, and limits from one terminal menu.
 - **Privacy checks:** abstract-only briefs, local validation, identifier masking, and memory-only cipher mappings.
-- **Execution support:** optional planning gates, recovery hints, token/timing metrics, and colored progress updates.
+- **Execution support:** optional planning gates, persistent recovery controls, token/timing metrics, and colored progress updates.
 
 ## Setup
 
@@ -42,5 +42,6 @@ Privacy checks are heuristic: **they cannot guarantee zero disclosure**, especia
 - [Configuration and provider setup](docs/configuration.md)
 - [Workflows and planning enforcement](docs/workflows.md)
 - [Commands, tools, progress, and troubleshooting](docs/usage.md)
+- [Recovery controls](docs/recovery.md)
 - [Privacy and limitations](docs/privacy.md)
 - [Development and testing](docs/development.md)
