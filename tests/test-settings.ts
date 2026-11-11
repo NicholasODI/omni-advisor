@@ -13,7 +13,11 @@ const ui = {
     if (title.startsWith('Workflow')) return options[2];
     if (title.startsWith('Advisor source')) return options[0];
     if (title.startsWith('OMP advisor')) return options[0];
-    return options[[1,3,4,6,7,8][round++]];
+    assert.match(options[7], /^Recovery:/);
+    assert.match(options[8], /^Authorization:/);
+    assert.equal(options[9], 'Save current choices as defaults');
+    assert.equal(options[10], 'Close');
+    return options[[1,3,4,6,9,10][round++]];
   },
   async input(title:string) { return title.startsWith('Maximum consultations') ? '5' : '60'; },
   notify() {},
@@ -44,6 +48,9 @@ assert.match(toolResponseFrame('Plan','cloud-led'),/After this batch/);
 assert.doesNotMatch(advisorBlock(),/Cloud-led mode/);
 
 let recoveryMenu=0;
-await openSettings({select:async(title,options)=>title==='Recovery control' ? 'enforce' : options[recoveryMenu++===0?9:8],input:async()=> '4',notify(){}},()=>state,{change:p=>state={...state,...p},ompModels:()=>[],provider:async()=>{},save:()=>{}});
+await openSettings({select:async(title,options)=>title==='Recovery control' ? 'enforce' : options[recoveryMenu++===0?7:10],input:async()=> '4',notify(){}},()=>state,{change:p=>state={...state,...p},ompModels:()=>[],provider:async()=>{},save:()=>{throw Error('recovery saved defaults');}});
 assert.equal(state.recoveryMode,'enforce');assert.equal(state.recoveryThreshold,4);
+let authorizationMenu=0;
+await openSettings({select:async(title,options)=>title==='Execution authorization for this session' ? 'paused' : options[authorizationMenu++===0?8:10],input:async()=>{throw Error('authorization requested input');},notify(){}},()=>state,{change:p=>state={...state,...p},ompModels:()=>[],provider:async()=>{},save:()=>{throw Error('authorization saved defaults');}});
+assert.equal(state.authorization,'paused');
 console.log('Settings/mode tests passed: menu navigation, OMP selection, limits, cancellation, provider validation, atomic persistence, adaptive batch prompts.');

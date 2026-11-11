@@ -21,7 +21,7 @@ export async function openSettings(ui: MenuUI, get: () => SettingsState, actions
     const s = get();
     const options = [`Cloud access: ${s.enabled ? 'ON' : 'OFF'}`, `Workflow: ${s.mode}`, `Planning enforcement: ${s.enforced ? 'ON' : 'OFF'}`,
       `Advisor source: ${s.source}`, `Advisor model: ${s.model}`, 'Provider settings',
-      `Limits: ${s.limit ?? 'unlimited'} calls; ${s.timeout / 1000}s timeout`, 'Save current choices as defaults', 'Close', `Recovery: ${s.recoveryMode ?? 'observe'}; threshold ${s.recoveryThreshold ?? 3}`, `Authorization: ${s.authorization ?? 'active'}`];
+      `Limits: ${s.limit ?? 'unlimited'} calls; ${s.timeout / 1000}s timeout`, `Recovery: ${s.recoveryMode ?? 'observe'}; threshold ${s.recoveryThreshold ?? 3}`, `Authorization: ${s.authorization ?? 'active'}`, 'Save current choices as defaults', 'Close'];
     const choice = await ui.select('Omni Advisor Settings — arrows + Enter; Esc closes', options);
     if (!choice || choice === 'Close') return;
     const index = options.indexOf(choice);
@@ -60,11 +60,11 @@ export async function openSettings(ui: MenuUI, get: () => SettingsState, actions
       if (!Number.isFinite(ms) || ms < 1000 || ms > 300000) { ui.notify('Timeout must be 1–300 seconds.', 'error'); continue; }
       actions.change({ limit: n, timeout: ms });
     }
-    if(index === 10){
+    if(index === 8){
       const authorization=await ui.select('Execution authorization for this session', ['active','paused','analysis','closure']);
       if(authorization)actions.change({authorization:authorization as ExecutionScope});
     }
-    if (index === 9) {
+    if (index === 7) {
       const mode=await ui.select('Recovery control', ['disabled','observe','enforce']);
       if (!mode) continue;
       const threshold=await ui.input('Similar failures before recovery (2–20)',String(s.recoveryThreshold ?? 3));
@@ -73,7 +73,7 @@ export async function openSettings(ui: MenuUI, get: () => SettingsState, actions
       if(!Number.isInteger(n)||n<2||n>20){ui.notify('Enter an integer from 2 to 20.','error');continue;}
       actions.change({recoveryMode:mode as RecoveryMode,recoveryThreshold:n});
     }
-    if (index === 7) {
+    if (index === 9) {
       try { actions.save(); ui.notify('Defaults saved. Current session choices remain active.', 'info'); }
       catch { ui.notify('Could not save defaults; current session choices remain active.', 'error'); }
     }

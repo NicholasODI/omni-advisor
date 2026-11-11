@@ -25,7 +25,7 @@ try {
   auth='timeout';id=await episode('timeout');assert.match((await ask(id)).content[0].text,/failed/);assert.match((await ask(id)).content[0].text,/already requested/);assert.equal(authCalls,1);
   auth='unavailable';id=await episode('unavailable');assert.match((await ask(id)).content[0].text,/authenticate/);assert.match((await ask(id)).content[0].text,/already requested/);assert.equal(authCalls,2);
   let menu=0;
-  ctx.ui.select=async(_t:string,options:string[])=>options[menu++===0?6:8];
+  ctx.ui.select=async(_t:string,options:string[])=>options[menu++===0?6:10];
   ctx.ui.input=async(title:string)=>title.startsWith('Maximum')?'1':'120';
   await commands['omni-advisor'].handler('settings',ctx);
   id=await episode('budget');assert.equal((await ask(id)).details.status,'budget');assert.match((await ask(id)).content[0].text,/already requested/);assert.equal(authCalls,2);
