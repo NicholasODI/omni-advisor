@@ -53,4 +53,19 @@ assert.equal(state.recoveryMode,'enforce');assert.equal(state.recoveryThreshold,
 let authorizationMenu=0;
 await openSettings({select:async(title,options)=>title==='Execution authorization for this session' ? 'paused' : options[authorizationMenu++===0?8:10],input:async()=>{throw Error('authorization requested input');},notify(){}},()=>state,{change:p=>state={...state,...p},ompModels:()=>[],provider:async()=>{},save:()=>{throw Error('authorization saved defaults');}});
 assert.equal(state.authorization,'paused');
+let themedMenu=0, themedSaves=0;
+await openSettings({
+  theme:{fg:(color,text)=>`\u001b[${color==='success'?32:90}m${text}\u001b[0m`},
+  select:async(_title,options)=>{
+    assert.match(options[7], /^Recovery:/);
+    assert.match(options[8], /^Authorization:/);
+    assert.equal(options[9], '\u001b[32mSave current choices as defaults\u001b[0m');
+    assert.equal(options[10], '\u001b[90mClose\u001b[0m');
+    assert.ok(themedMenu<2, 'colored Close must exit');
+    return options[themedMenu++===0?9:10];
+  },
+  input:async()=>{throw Error('themed actions requested input');},notify(){},
+},()=>state,{change:()=>{throw Error('themed actions changed settings');},ompModels:()=>[],provider:async()=>{},save:()=>{themedSaves++;}});
+assert.equal(themedSaves,1);
+assert.equal(themedMenu,2);
 console.log('Settings/mode tests passed: menu navigation, OMP selection, limits, cancellation, provider validation, atomic persistence, adaptive batch prompts.');
