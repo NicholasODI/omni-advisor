@@ -65,3 +65,8 @@ Provider tests use local mocks/intercepted network calls. They do not establish 
 For a live check, load this checkout's `index.ts` in OMP, select a configured advisor, test cloud-off first, then enable access and submit a synthetic abstract task. Confirm progress, the returned plan, and local execution behavior. Test enforcement/compaction only if that workflow matters. Avoid real sensitive records in test prompts.
 
 Use bounded verification. A failed homemade browser harness is not automatically evidence of a product defect. If a user will check the UI manually, report visual limitations rather than expanding a replacement browser framework.
+
+Run `node tests/test-maintenance-boundaries.ts` for authorization counterexamples,
+distinct check targets, legitimate rechecks, and session continuation/isolation.
+See [Maintenance boundaries](maintenance.md) before extending recovery or command
+routing. No cross-extension dependency is required.
