@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openSettings, editProvider, type SettingsState } from '../src/ui/settingsMenu.ts';
-import { saveSettings } from '../src/state/settingsStorage.ts';
+import { readSettings, saveSettings } from '../src/state/settingsStorage.ts';
 import { advisorBlock, toolResponseFrame } from '../src/advisor/cloudAdvisor.ts';
 import { executionInstructions } from '../src/workflow/executionMode.ts';
 let state: SettingsState = {enabled:false,enforced:false,mode:'local-led',source:'config',model:'a/b',timeout:120000};
@@ -27,6 +27,10 @@ assert.equal(state.mode,'cloud-led'); assert.equal(state.source,'omp'); assert.e
 const before={...state};
 await openSettings({...ui,select:async()=>undefined},()=>state,{change:()=>{throw Error('cancel mutated');},ompModels:()=>[],provider:async()=>{},save:()=>{throw Error('cancel saved');}});
 assert.deepEqual(state,before);
+let failedSaveMenu=0;
+const saveErrors:string[]=[];
+await openSettings({...ui,select:async(_t,o)=>o[failedSaveMenu++===0?9:10],notify:(message,level)=>{if(level==='error')saveErrors.push(message);}},()=>state,{change:()=>{},ompModels:()=>[],provider:async()=>{},save:()=>{throw Error('EACCES: synthetic configuration path');}});
+assert.match(saveErrors[0],/current session choices remain active.*EACCES: synthetic configuration path/);
 let inputs=['router','https://openrouter.ai/api/v1','ADVISOR_KEY','4096'];
 const provider=await editProvider({notify(){},input:async()=>inputs.shift(),select:async(_t,o)=>o[0]}, {},'');
 assert.equal(provider?.provider.apiKeyEnv,'ADVISOR_KEY'); assert.equal(provider?.provider.api,'openai');
@@ -35,6 +39,13 @@ assert.equal(await editProvider({notify(){},input:async()=>inputs.shift(),select
 const dir=mkdtempSync(join(tmpdir(),'advisor-settings-'));
 try {
   const path=join(dir,'config.json');
+  assert.deepEqual(readSettings(path), {});
+  saveSettings(path,{advisorModel:'synthetic/model'});
+  assert.equal(readSettings(path).advisorModel,'synthetic/model');
+  writeFileSync(path,'\uFEFF' + JSON.stringify({advisorModel:'windows/model',unrelated:'preserve'}));
+  assert.equal(readSettings(path).advisorModel,'windows/model');
+  saveSettings(path,{executionMode:'balanced'});
+  assert.deepEqual(readSettings(path),{advisorModel:'windows/model',unrelated:'preserve',executionMode:'balanced',providers:{}});
   writeFileSync(path,JSON.stringify({unrelated:'keep',maxConsultationsPerSession:3,providers:{old:{baseUrl:'https://old.example'}}}));
   saveSettings(path,{executionMode:'cloud-led',maxConsultationsPerSession:undefined,providers:{router:provider!.provider}});
   const saved=JSON.parse(readFileSync(path,'utf8'));

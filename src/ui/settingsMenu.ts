@@ -75,7 +75,7 @@ export async function openSettings(ui: MenuUI, get: () => SettingsState, actions
     }
     if (index === 9) {
       try { actions.save(); ui.notify('Defaults saved. Current session choices remain active.', 'info'); }
-      catch { ui.notify('Could not save defaults; current session choices remain active.', 'error'); }
+      catch (error) { ui.notify(`Could not save defaults; current session choices remain active. ${error instanceof Error ? error.message : String(error)}`, 'error'); }
     }
   }
 }
