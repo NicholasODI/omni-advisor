@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openSettings, editProvider, type SettingsState } from '../src/ui/settingsMenu.ts';
-import { saveSettings } from '../src/state/settingsStorage.ts';
+import { readSettings, saveSettings } from '../src/state/settingsStorage.ts';
 import { advisorBlock, toolResponseFrame } from '../src/advisor/cloudAdvisor.ts';
 import { executionInstructions } from '../src/workflow/executionMode.ts';
 let state: SettingsState = {enabled:false,enforced:false,mode:'local-led',source:'config',model:'a/b',timeout:120000};
@@ -27,6 +27,10 @@ assert.equal(state.mode,'cloud-led'); assert.equal(state.source,'omp'); assert.e
 const before={...state};
 await openSettings({...ui,select:async()=>undefined},()=>state,{change:()=>{throw Error('cancel mutated');},ompModels:()=>[],provider:async()=>{},save:()=>{throw Error('cancel saved');}});
 assert.deepEqual(state,before);
+let failedSaveMenu=0;
+const saveErrors:string[]=[];
+await openSettings({...ui,select:async(_t,o)=>o[failedSaveMenu++===0?9:10],notify:(message,level)=>{if(level==='error')saveErrors.push(message);}},()=>state,{change:()=>{},ompModels:()=>[],provider:async()=>{},save:()=>{throw Error('EACCES: synthetic configuration path');}});
+assert.match(saveErrors[0],/current session choices remain active.*EACCES: synthetic configuration path/);
 let inputs=['router','https://openrouter.ai/api/v1','ADVISOR_KEY','4096'];
 const provider=await editProvider({notify(){},input:async()=>inputs.shift(),select:async(_t,o)=>o[0]}, {},'');
 assert.equal(provider?.provider.apiKeyEnv,'ADVISOR_KEY'); assert.equal(provider?.provider.api,'openai');
@@ -35,6 +39,13 @@ assert.equal(await editProvider({notify(){},input:async()=>inputs.shift(),select
 const dir=mkdtempSync(join(tmpdir(),'advisor-settings-'));
 try {
   const path=join(dir,'config.json');
+  assert.deepEqual(readSettings(path), {});
+  saveSettings(path,{advisorModel:'synthetic/model'});
+  assert.equal(readSettings(path).advisorModel,'synthetic/model');
+  writeFileSync(path,'\uFEFF' + JSON.stringify({advisorModel:'windows/model',unrelated:'preserve'}));
+  assert.equal(readSettings(path).advisorModel,'windows/model');
+  saveSettings(path,{executionMode:'balanced'});
+  assert.deepEqual(readSettings(path),{advisorModel:'windows/model',unrelated:'preserve',executionMode:'balanced',providers:{}});
   writeFileSync(path,JSON.stringify({unrelated:'keep',maxConsultationsPerSession:3,providers:{old:{baseUrl:'https://old.example'}}}));
   saveSettings(path,{executionMode:'cloud-led',maxConsultationsPerSession:undefined,providers:{router:provider!.provider}});
   const saved=JSON.parse(readFileSync(path,'utf8'));
@@ -53,4 +64,19 @@ assert.equal(state.recoveryMode,'enforce');assert.equal(state.recoveryThreshold,
 let authorizationMenu=0;
 await openSettings({select:async(title,options)=>title==='Execution authorization for this session' ? 'paused' : options[authorizationMenu++===0?8:10],input:async()=>{throw Error('authorization requested input');},notify(){}},()=>state,{change:p=>state={...state,...p},ompModels:()=>[],provider:async()=>{},save:()=>{throw Error('authorization saved defaults');}});
 assert.equal(state.authorization,'paused');
+let themedMenu=0, themedSaves=0;
+await openSettings({
+  theme:{fg:(color,text)=>`\u001b[${color==='success'?32:90}m${text}\u001b[0m`},
+  select:async(_title,options)=>{
+    assert.match(options[7], /^Recovery:/);
+    assert.match(options[8], /^Authorization:/);
+    assert.equal(options[9], '\u001b[32mSave current choices as defaults\u001b[0m');
+    assert.equal(options[10], '\u001b[90mClose\u001b[0m');
+    assert.ok(themedMenu<2, 'colored Close must exit');
+    return options[themedMenu++===0?9:10];
+  },
+  input:async()=>{throw Error('themed actions requested input');},notify(){},
+},()=>state,{change:()=>{throw Error('themed actions changed settings');},ompModels:()=>[],provider:async()=>{},save:()=>{themedSaves++;}});
+assert.equal(themedSaves,1);
+assert.equal(themedMenu,2);
 console.log('Settings/mode tests passed: menu navigation, OMP selection, limits, cancellation, provider validation, atomic persistence, adaptive batch prompts.');

@@ -49,7 +49,7 @@ import type {
   ExtensionAPI,
   ExtensionCommandContext,
 } from "@oh-my-pi/pi-coding-agent";
-import { saveSettings } from "./state/settingsStorage.ts";
+import { readSettings, saveSettings } from "./state/settingsStorage.ts";
 import { editProvider } from "./ui/settingsMenu.ts";
 import {
   executionInstructions,
@@ -115,10 +115,9 @@ const DEFAULT_ADVISOR_MODEL = "codex-lb/gpt-6.1-sol";
 
 function loadConfig(): OmniAdvisorConfig {
   try {
-    const raw = readFileSync(CONFIG_PATH, "utf8");
-    const parsed = JSON.parse(raw) as OmniAdvisorConfig;
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
+    return readSettings(CONFIG_PATH) as OmniAdvisorConfig;
+  } catch (error) {
+    console.warn(`omni-advisor: Could not load configuration at ${CONFIG_PATH}: ${error instanceof Error ? error.message : String(error)}`);
     return {};
   }
 }

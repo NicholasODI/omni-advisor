@@ -6,6 +6,7 @@ export interface SettingsState {
   model: string; limit?: number; timeout: number; recoveryMode?: RecoveryMode; recoveryThreshold?: number; authorization?: ExecutionScope;
 }
 interface MenuUI {
+  theme?: { fg(color: 'success' | 'muted', text: string): string };
   select(title: string, options: string[]): Promise<string | undefined>;
   input(title: string, placeholder?: string): Promise<string | undefined>;
   notify(message: string, level?: 'info' | 'warning' | 'error'): void;
@@ -22,9 +23,14 @@ export async function openSettings(ui: MenuUI, get: () => SettingsState, actions
     const options = [`Cloud access: ${s.enabled ? 'ON' : 'OFF'}`, `Workflow: ${s.mode}`, `Planning enforcement: ${s.enforced ? 'ON' : 'OFF'}`,
       `Advisor source: ${s.source}`, `Advisor model: ${s.model}`, 'Provider settings',
       `Limits: ${s.limit ?? 'unlimited'} calls; ${s.timeout / 1000}s timeout`, `Recovery: ${s.recoveryMode ?? 'observe'}; threshold ${s.recoveryThreshold ?? 3}`, `Authorization: ${s.authorization ?? 'active'}`, 'Save current choices as defaults', 'Close'];
+    if (ui.theme) {
+      options[9] = ui.theme.fg('success', options[9]);
+      options[10] = ui.theme.fg('muted', options[10]);
+    }
     const choice = await ui.select('Omni Advisor Settings — arrows + Enter; Esc closes', options);
-    if (!choice || choice === 'Close') return;
+    if (!choice) return;
     const index = options.indexOf(choice);
+    if (index === 10) return;
     if (index === 0) actions.change({ enabled: !s.enabled });
     if (index === 1) {
       const mode = await ui.select('Workflow (cloud-led consults between work batches)', ['Balanced — plan, key decisions, final review (default)', 'Local-led — plan once, execute locally', 'Cloud-led — cloud decides next batch']);
@@ -75,7 +81,7 @@ export async function openSettings(ui: MenuUI, get: () => SettingsState, actions
     }
     if (index === 9) {
       try { actions.save(); ui.notify('Defaults saved. Current session choices remain active.', 'info'); }
-      catch { ui.notify('Could not save defaults; current session choices remain active.', 'error'); }
+      catch (error) { ui.notify(`Could not save defaults; current session choices remain active. ${error instanceof Error ? error.message : String(error)}`, 'error'); }
     }
   }
 }
