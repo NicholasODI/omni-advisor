@@ -25,6 +25,8 @@
 
 Use the settings menu's save action to persist defaults. See [configuration](configuration.md) for scope and precedence.
 
+`/omni-advisor on` adds a one-time friendly reminder to the model context on your next prompt in that session. It reports that cloud access is enabled. Consultation decisions still follow the configured workflow and task scope. The command itself starts no turn. Use `/omni-advisor off` to cancel a pending reminder.
+
 ## Model-facing tools
 
 ### `ask_advisor`
