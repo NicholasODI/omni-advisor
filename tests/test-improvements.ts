@@ -10,7 +10,7 @@ for (const secret of ['AbCdEfGhIjKlMnOpQrStUvWxYz0123456789ABCD12', 'sk-01234567
 assert.throws(() => validateBrief({ objective: 'Plan worker', questions: 'password=FAKE_ONLY' }), /field questions: credential or authentication data/);
 try { validateBrief({ objective: 'password=FAKE_ONLY', questions: 'Which strategy?' }); } catch (e) { assert.equal(String(e).includes('FAKE_ONLY'), false); }
 assert.equal(planningText({ objective: 'Worker', questions: 'Why?', i: 'host intent metadata' } as any).includes('host intent'), false);
-const metrics = new SessionMetrics(); metrics.begin(100); metrics.toolStart('a', 120); metrics.toolEnd('a','read',false,140); metrics.result(true,30,{input:20,output:10}); metrics.result(false,5); metrics.blocked++; metrics.end(200);
+const metrics = new SessionMetrics(); metrics.begin(100); metrics.toolStart('a', 120); metrics.toolEnd('a',140); metrics.result(true,30,{input:20,output:10}); metrics.result(false,5); metrics.blocked++; metrics.end(200);
 assert.deepEqual([metrics.snapshot().agentWallMs, metrics.snapshot().cumulativeToolMs, metrics.snapshot().cloudLatencyMs], [100,20,35]);
 assert.equal(metrics.snapshot().locallyBlocked,1); assert.equal(metrics.snapshot().responsesWithoutUsage,1);
 const tools: any = {}, hooks: any = {};

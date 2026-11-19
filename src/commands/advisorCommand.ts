@@ -22,9 +22,35 @@ export interface AdvisorCommandActions {
   saveRecovery(): void;
   newTask(): void;
 }
+const subcommands = {
+  "scope active": "Explicitly authorize execution/resume",
+  "scope paused": "Stop new work; reminders cannot resume it",
+  "scope analysis": "Inspection only, no shell/edit/delegation",
+  "scope closure": "Wrap up current scope",
+  "recovery observe": "Notify on repeated failures (default)",
+  "recovery enforce": "Require a decision before equivalent retries",
+  "recovery disabled": "Disable recovery detection and blocking",
+  "recovery override": "One retry: add episode ID and an abstract reason",
+  "recovery new-task": "Retire recovery state for unrelated work",
+  "settings": "Open interactive settings",
+  "mode balanced": "Plan, consequential decisions, final abstract review (default)",
+  "mode local-led": "Plan then execute locally",
+  "mode cloud-led": "Cloud selects bounded execution batches",
+  "planning on": "Require abstract cloud planning before execution tools",
+  "planning off": "Disable planning enforcement",
+  "on": "Enable advisor nudge for this session",
+  "off": "Disable advisor nudge for this session",
+  "status": "Show gate state + resolved advisor model",
+  "model omp": "Choose from OMP instance models",
+  "source omp": "Use OMP model registry and credentials",
+  "source config": "Use configured endpoints",
+  "model": "Select advisor model (model clear resets)",
+};
+
 export function registerAdvisorCommand(
   pi: ExtensionAPI,
   forContext: (ctx: ExtensionCommandContext) => AdvisorCommandActions,
+  modelOptions: () => Array<{ label: string; description: string }>,
 ): void {
   pi.registerCommand("omni-advisor", {
     description:
@@ -33,14 +59,10 @@ export function registerAdvisorCommand(
       const text = arg || "";
       const modelWord = text.match(/^model[ \t]+(\S*)$/i);
       if (modelWord) {
-        refreshModelOptions();
         const prefix = modelWord[1].toLowerCase();
-        const items = advisorModelOptions().filter((o) => {
-          const l = o.label.toLowerCase();
-          const bare = o.label.includes("/")
-            ? o.label.slice(o.label.indexOf("/") + 1)
-            : l;
-          return l.startsWith(prefix) || bare.startsWith(prefix);
+        const items = modelOptions().filter(({ label }) => {
+          const value = label.toLowerCase();
+          return value.startsWith(prefix) || value.slice(value.indexOf("/") + 1).startsWith(prefix);
         });
         return items.length
           ? items.map((o) => ({
@@ -52,121 +74,14 @@ export function registerAdvisorCommand(
       }
       const p = text.trim().toLowerCase();
       if (p.includes(" ")) return null;
-      const subs = [
-        {
-          label: "scope active",
-          value: "scope active",
-          description: "Explicitly authorize execution/resume",
-        },
-        {
-          label: "scope paused",
-          value: "scope paused",
-          description: "Stop new work; reminders cannot resume it",
-        },
-        {
-          label: "scope analysis",
-          value: "scope analysis",
-          description: "Inspection only, no shell/edit/delegation",
-        },
-        {
-          label: "scope closure",
-          value: "scope closure",
-          description: "Wrap up current scope",
-        },
-        {
-          label: "recovery observe",
-          value: "recovery observe",
-          description: "Notify on repeated failures (default)",
-        },
-        {
-          label: "recovery enforce",
-          value: "recovery enforce",
-          description: "Require a decision before equivalent retries",
-        },
-        {
-          label: "recovery disabled",
-          value: "recovery disabled",
-          description: "Disable recovery detection and blocking",
-        },
-        {
-          label: "recovery override",
-          value: "recovery override ",
-          description: "One retry: add episode ID and an abstract reason",
-        },
-        {
-          label: "recovery new-task",
-          value: "recovery new-task",
-          description: "Retire recovery state for unrelated work",
-        },
-        {
-          label: "settings",
-          value: "settings",
-          description: "Open interactive settings",
-        },
-        {
-          label: "mode balanced",
-          value: "mode balanced",
-          description:
-            "Plan, consequential decisions, final abstract review (default)",
-        },
-        {
-          label: "mode local-led",
-          value: "mode local-led",
-          description: "Plan then execute locally",
-        },
-        {
-          label: "mode cloud-led",
-          value: "mode cloud-led",
-          description: "Cloud selects bounded execution batches",
-        },
-        {
-          label: "planning on",
-          value: "planning on",
-          description: "Require abstract cloud planning before execution tools",
-        },
-        {
-          label: "planning off",
-          value: "planning off",
-          description: "Disable planning enforcement",
-        },
-        {
-          label: "on",
-          value: "on",
-          description: "Enable advisor nudge for this session",
-        },
-        {
-          label: "off",
-          value: "off",
-          description: "Disable advisor nudge for this session",
-        },
-        {
-          label: "status",
-          value: "status",
-          description: "Show gate state + resolved advisor model",
-        },
-        {
-          label: "model omp",
-          value: "model omp",
-          description: "Choose from OMP instance models",
-        },
-        {
-          label: "source omp",
-          value: "source omp",
-          description: "Use OMP model registry and credentials",
-        },
-        {
-          label: "source config",
-          value: "source config",
-          description: "Use configured endpoints",
-        },
-        {
-          label: "model",
-          value: "model",
-          description: "Select advisor model (model clear resets)",
-        },
-      ];
-      const m = subs.filter((s) => s.label.startsWith(p));
-      return m.length ? m : null;
+      const matches = Object.entries(subcommands)
+        .filter(([label]) => label.startsWith(p))
+        .map(([label, description]) => ({
+          label,
+          value: label === "recovery override" ? label + " " : label,
+          description,
+        }));
+      return matches.length ? matches : null;
     },
     handler: async (arg, ctx) => {
       const actions = forContext(ctx);

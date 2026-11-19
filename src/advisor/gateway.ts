@@ -18,6 +18,13 @@ import { join } from "node:path";
 
 const OMP_MODELS_YML = join(homedir(), ".omp", "agent", "models.yml");
 
+export function parseProviderBaseUrl(value: string): URL {
+  const url = new URL(value);
+  if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash)
+    throw new Error("Provider baseUrl must be HTTPS without credentials, query, or fragment.");
+  return url;
+}
+
 export interface ProviderEndpoint {
   provider: string;
   baseUrl: string;
@@ -81,15 +88,23 @@ export function loadProvider(providerName: string): ProviderEndpoint | null {
   return { provider: providerName, baseUrl, apiKey: apiKey || null };
 }
 
-/** Fetch the gateway's usage/limit report. Rejects on any failure; callers
- *  treat a rejection as "quota data unavailable" and log nothing. */
-export async function fetchGatewayUsage(gw: ProviderEndpoint, timeoutMs = 8000): Promise<GatewayUsageReport> {
-  const url = gw.baseUrl.replace(/\/$/, "") + "/usage";
+async function fetchGatewayJson(
+  gw: ProviderEndpoint,
+  path: "/usage" | "/models",
+  timeoutMs: number,
+): Promise<unknown> {
+  const url = parseProviderBaseUrl(gw.baseUrl).href.replace(/\/$/, "") + path;
   const headers: Record<string, string> = {};
   if (gw.apiKey) headers["Authorization"] = `Bearer ${gw.apiKey}`;
   const res = await fetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
-  if (!res.ok) throw new Error(`gateway /usage returned HTTP ${res.status}`);
-  const body = (await res.json()) as GatewayUsageReport;
+  if (!res.ok) throw new Error(`gateway ${path} returned HTTP ${res.status}`);
+  return res.json();
+}
+
+/** Fetch the gateway's usage/limit report. Rejects on any failure; callers
+ *  treat a rejection as "quota data unavailable" and log nothing. */
+export async function fetchGatewayUsage(gw: ProviderEndpoint, timeoutMs = 8000): Promise<GatewayUsageReport> {
+  const body = (await fetchGatewayJson(gw, "/usage", timeoutMs)) as GatewayUsageReport;
   if (!body || typeof body !== "object") throw new Error("gateway /usage returned a non-object body");
   return body;
 }
@@ -103,12 +118,7 @@ export interface GatewayModel {
 /** Fetch the gateway's model roster (GET {baseUrl}/models). Rejects on any
  *  failure; callers treat a rejection as "roster unavailable". */
 export async function fetchGatewayModels(gw: ProviderEndpoint, timeoutMs = 8000): Promise<GatewayModel[]> {
-  const url = gw.baseUrl.replace(/\/$/, "") + "/models";
-  const headers: Record<string, string> = {};
-  if (gw.apiKey) headers["Authorization"] = `Bearer ${gw.apiKey}`;
-  const res = await fetch(url, { headers, signal: AbortSignal.timeout(timeoutMs) });
-  if (!res.ok) throw new Error(`gateway /models returned HTTP ${res.status}`);
-  const body = (await res.json()) as {
+  const body = (await fetchGatewayJson(gw, "/models", timeoutMs)) as {
     data?: Array<{ id?: unknown; metadata?: { display_name?: unknown; description?: unknown } }>;
   };
   if (!body || !Array.isArray(body.data)) throw new Error("gateway /models returned a non-list body");

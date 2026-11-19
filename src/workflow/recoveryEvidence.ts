@@ -43,12 +43,7 @@ export function operationKey(
     if (typeof input.command !== "string") return undefined;
     const checks = logicalChecks(input.command, input.cwd);
     if (checks.length === 1) return checks[0].key;
-    // Ignore cosmetic quoting of simple tokens; do not parse shell control flow.
-    const command = input.command
-      .replace(/['"]([\w./\\:-]+)['"]/g, "$1")
-      .replace(/\s+/g, " ")
-      .trim();
-    return hash(`bash:${String(input.cwd ?? "")}:${command}`);
+    return legacyShellKey(input);
   }
   return tool === "eval" && typeof input.code === "string"
     ? hash(`eval:${input.code.replace(/\s+/g, " ").trim()}`)
@@ -57,6 +52,7 @@ export function operationKey(
 export function legacyShellKey(
   input: Record<string, unknown>,
 ): string | undefined {
+  // Ignore cosmetic quoting of simple tokens without interpreting shell control flow.
   return typeof input.command === "string"
     ? hash(
         `bash:${String(input.cwd ?? "")}:${input.command

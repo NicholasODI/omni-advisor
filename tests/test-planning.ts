@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { dispatchIsolatedAdvisor } from '../src/advisor/advisorDispatch.ts';
+import { fetchGatewayModels, fetchGatewayUsage } from '../src/advisor/gateway.ts';
 import { assertAbstract, validateBrief } from '../src/privacy/planning.ts';
 import extension from '../index.ts';
 let calls = 0;
@@ -7,7 +8,13 @@ let payload: any;
 let request: any;
 const original = globalThis.fetch;
 globalThis.fetch = async (_url, options) => {
-  calls++; request = { url: String(_url), ...options }; payload = JSON.parse(String(options?.body));
+  calls++;
+  request = { url: String(_url), ...options };
+  if (request.url.endsWith('/models')) {
+    return Response.json({ data: [{ id: 'advisor', metadata: { display_name: 'Advisor' } }] });
+  }
+  if (request.url.endsWith('/usage')) return Response.json({ request_count: 2 });
+  payload = JSON.parse(String(options?.body));
   return new Response(JSON.stringify(payload.system
     ? { content: [{ type: 'text', text: 'Plan' }], usage: { input_tokens: 10, output_tokens: 20 } }
     : { choices: [{ message: { content: 'Plan' }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 20 } }));
@@ -33,7 +40,17 @@ try {
   assert.doesNotMatch(payload.system, /ordered steps/i);
   assert.match(payload.messages[0].content, /Concurrent retries: unverified/);
   assert.equal(request.headers['anthropic-version'], '2023-06-01'); assert.match(request.url, /\/v1\/messages$/);
+  const gateway = { provider: 'example', baseUrl: 'https://example.com/v1/', apiKey: 'synthetic' };
+  assert.equal((await fetchGatewayModels(gateway))[0].displayName, 'Advisor');
+  assert.equal(request.url, 'https://example.com/v1/models');
+  assert.equal(request.headers.Authorization, 'Bearer synthetic');
+  assert.equal((await fetchGatewayUsage(gateway)).request_count, 2);
+  assert.equal(request.url, 'https://example.com/v1/usage');
   const before = calls;
+  await assert.rejects(
+    () => fetchGatewayModels({ ...gateway, baseUrl: 'http://example.com/v1' }),
+    /must be HTTPS/,
+  );
   for (const text of ['password: secret', '```code```', '/workspace/private/file', 'https://internal.example']) {
     assert.throws(() => assertAbstract(text));
     assert.equal((await dispatchIsolatedAdvisor('example/model', text, 1000, undefined, providers)).ok, false);

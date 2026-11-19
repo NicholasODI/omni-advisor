@@ -8,7 +8,7 @@ export class SessionMetrics {
   begin(now = Date.now()): void { if (this.started === undefined) this.started = now; }
   end(now = Date.now()): void { if (this.started !== undefined) this.elapsedMs += now - this.started; this.started = undefined; }
   toolStart(id: string, now = Date.now()): void { this.tools.set(id, now); }
-  toolEnd(id: string, _name: string, _error: boolean, now = Date.now()): void {
+  toolEnd(id: string, now = Date.now()): void {
     const start = this.tools.get(id); if (start !== undefined) this.toolMs += now - start;
     this.tools.delete(id);
   }

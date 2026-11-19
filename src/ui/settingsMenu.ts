@@ -1,6 +1,7 @@
 import type { ExecutionScope } from '../workflow/executionScope.ts';
 import type { RecoveryMode } from '../workflow/recovery.ts';
 import type { ExecutionMode } from '../workflow/executionMode.ts';
+import { parseProviderBaseUrl } from '../advisor/gateway.ts';
 export interface SettingsState {
   enabled: boolean; enforced: boolean; mode: ExecutionMode; source: 'config' | 'omp';
   model: string; limit?: number; timeout: number; recoveryMode?: RecoveryMode; recoveryThreshold?: number; authorization?: ExecutionScope;
@@ -20,28 +21,34 @@ export async function openSettings(ui: MenuUI, get: () => SettingsState, actions
 }) {
   while (true) {
     const s = get();
-    const options = [`Cloud access: ${s.enabled ? 'ON' : 'OFF'}`, `Workflow: ${s.mode}`, `Planning enforcement: ${s.enforced ? 'ON' : 'OFF'}`,
-      `Advisor source: ${s.source}`, `Advisor model: ${s.model}`, 'Provider settings',
-      `Limits: ${s.limit ?? 'unlimited'} calls; ${s.timeout / 1000}s timeout`, `Recovery: ${s.recoveryMode ?? 'observe'}; threshold ${s.recoveryThreshold ?? 3}`, `Authorization: ${s.authorization ?? 'active'}`, 'Save current choices as defaults', 'Close'];
+    const options = {
+      access: `Cloud access: ${s.enabled ? 'ON' : 'OFF'}`,
+      workflow: `Workflow: ${s.mode}`,
+      enforcement: `Planning enforcement: ${s.enforced ? 'ON' : 'OFF'}`,
+      source: `Advisor source: ${s.source}`,
+      model: `Advisor model: ${s.model}`,
+      provider: 'Provider settings',
+      limits: `Limits: ${s.limit ?? 'unlimited'} calls; ${s.timeout / 1000}s timeout`,
+      recovery: `Recovery: ${s.recoveryMode ?? 'observe'}; threshold ${s.recoveryThreshold ?? 3}`,
+      authorization: `Authorization: ${s.authorization ?? 'active'}`,
+      save: 'Save current choices as defaults',
+      close: 'Close',
+    };
     if (ui.theme) {
-      options[9] = ui.theme.fg('success', options[9]);
-      options[10] = ui.theme.fg('muted', options[10]);
+      options.save = ui.theme.fg('success', options.save);
+      options.close = ui.theme.fg('muted', options.close);
     }
-    const choice = await ui.select('Omni Advisor Settings — arrows + Enter; Esc closes', options);
-    if (!choice) return;
-    const index = options.indexOf(choice);
-    if (index === 10) return;
-    if (index === 0) actions.change({ enabled: !s.enabled });
-    if (index === 1) {
+    const choice = await ui.select('Omni Advisor Settings — arrows + Enter; Esc closes', Object.values(options));
+    if (!choice || choice === options.close) return;
+    if (choice === options.access) actions.change({ enabled: !s.enabled });
+    else if (choice === options.workflow) {
       const mode = await ui.select('Workflow (cloud-led consults between work batches)', ['Balanced — plan, key decisions, final review (default)', 'Local-led — plan once, execute locally', 'Cloud-led — cloud decides next batch']);
       if (mode) actions.change({ mode: mode.startsWith('Cloud-led') ? 'cloud-led' : mode.startsWith('Balanced') ? 'balanced' : 'local-led' });
-    }
-    if (index === 2) actions.change({ enforced: !s.enforced });
-    if (index === 3) {
+    } else if (choice === options.enforcement) actions.change({ enforced: !s.enforced });
+    else if (choice === options.source) {
       const source = await ui.select('Advisor source', ['OMP instance', 'Configured endpoint']);
       if (source) actions.change({ source: source === 'OMP instance' ? 'omp' : 'config' });
-    }
-    if (index === 4) {
+    } else if (choice === options.model) {
       if (s.source === 'omp') {
         const models = actions.ompModels();
         if (!models.length) { ui.notify('No available OMP models.', 'warning'); continue; }
@@ -53,9 +60,8 @@ export async function openSettings(ui: MenuUI, get: () => SettingsState, actions
         if (!/^[^/\s]+\/\S+$/.test(model.trim())) ui.notify('Use provider/model-id.', 'error');
         else actions.change({ model: model.trim() });
       }
-    }
-    if (index === 5) await actions.provider();
-    if (index === 6) {
+    } else if (choice === options.provider) await actions.provider();
+    else if (choice === options.limits) {
       const limit = await ui.input('Maximum consultations (blank = unlimited)', s.limit?.toString() ?? '');
       if (limit === undefined) continue;
       const n = limit.trim() ? Number(limit) : undefined;
@@ -65,12 +71,7 @@ export async function openSettings(ui: MenuUI, get: () => SettingsState, actions
       const ms = Number(timeout) * 1000;
       if (!Number.isFinite(ms) || ms < 1000 || ms > 300000) { ui.notify('Timeout must be 1–300 seconds.', 'error'); continue; }
       actions.change({ limit: n, timeout: ms });
-    }
-    if(index === 8){
-      const authorization=await ui.select('Execution authorization for this session', ['active','paused','analysis','closure']);
-      if(authorization)actions.change({authorization:authorization as ExecutionScope});
-    }
-    if (index === 7) {
+    } else if (choice === options.recovery) {
       const mode=await ui.select('Recovery control', ['disabled','observe','enforce']);
       if (!mode) continue;
       const threshold=await ui.input('Similar failures before recovery (2–20)',String(s.recoveryThreshold ?? 3));
@@ -78,8 +79,10 @@ export async function openSettings(ui: MenuUI, get: () => SettingsState, actions
       const n=Number(threshold);
       if(!Number.isInteger(n)||n<2||n>20){ui.notify('Enter an integer from 2 to 20.','error');continue;}
       actions.change({recoveryMode:mode as RecoveryMode,recoveryThreshold:n});
-    }
-    if (index === 9) {
+    } else if (choice === options.authorization) {
+      const authorization = await ui.select('Execution authorization for this session', ['active', 'paused', 'analysis', 'closure']);
+      if (authorization) actions.change({ authorization: authorization as ExecutionScope });
+    } else if (choice === options.save) {
       try { actions.save(); ui.notify('Defaults saved. Current session choices remain active.', 'info'); }
       catch (error) { ui.notify(`Could not save defaults; current session choices remain active. ${error instanceof Error ? error.message : String(error)}`, 'error'); }
     }
@@ -94,8 +97,7 @@ export async function editProvider(ui: MenuUI, current: Record<string, import('.
   const baseUrl = await ui.input('HTTPS API base URL (no credentials)', existing?.baseUrl ?? 'https://openrouter.ai/api/v1');
   if (baseUrl === undefined) return;
   try {
-    const url = new URL(baseUrl);
-    if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash) throw new Error();
+    parseProviderBaseUrl(baseUrl);
   } catch { ui.notify('Use an HTTPS base URL without credentials, query, or fragment.', 'error'); return; }
   const api = await ui.select('API format', ['OpenAI compatible', 'Anthropic native']);
   if (!api) return;

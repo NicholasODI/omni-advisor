@@ -88,6 +88,9 @@ assert.equal(sessions.beginsTask(one, "prompt"), true); // consumed exactly once
 sessions.compact(one);
 sessions.input(one, "inspect only");
 assert.equal(sessions.beginsTask(one, "prompt"), true); // real user input wins
+sessions.input(one, "inspect only");
+sessions.compact(one);
+assert.equal(sessions.beginsTask(one, "prompt"), true); // order does not change precedence
 assert.equal(sessions.beginsTask(one, "revive"), false);
 const unknownA = { sessionManager: {} },
   unknownB = { sessionManager: {} };

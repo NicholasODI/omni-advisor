@@ -6,6 +6,7 @@ import { openSettings, editProvider, type SettingsState } from '../src/ui/settin
 import { readSettings, saveSettings } from '../src/state/settingsStorage.ts';
 import { advisorBlock, toolResponseFrame } from '../src/advisor/cloudAdvisor.ts';
 import { executionInstructions } from '../src/workflow/executionMode.ts';
+import { registerAdvisorCommand } from '../src/commands/advisorCommand.ts';
 let state: SettingsState = {enabled:false,enforced:false,mode:'local-led',source:'config',model:'a/b',timeout:120000};
 let round=0, saves=0;
 const ui = {
@@ -79,4 +80,16 @@ await openSettings({
 },()=>state,{change:()=>{throw Error('themed actions changed settings');},ompModels:()=>[],provider:async()=>{},save:()=>{themedSaves++;}});
 assert.equal(themedSaves,1);
 assert.equal(themedMenu,2);
+let completions: (input: string) => Array<{ label: string; value: string }> | null = () => null;
+registerAdvisorCommand({
+  registerCommand(_name: string, command: { getArgumentCompletions: typeof completions }) {
+    completions = command.getArgumentCompletions;
+  },
+} as any, () => { throw new Error('Completion must not need an active session'); }, () => [
+  { label: 'provider/alpha', description: 'Alpha' },
+  { label: 'provider/beta', description: 'Beta' },
+]);
+assert.deepEqual(completions('model AL')?.map(option => option.value), ['model provider/alpha']);
+assert.deepEqual(completions('model provider/')?.map(option => option.value), ['model provider/alpha', 'model provider/beta']);
+assert.equal(completions('recovery')?.find(option => option.label === 'recovery override')?.value, 'recovery override ');
 console.log('Settings/mode tests passed: menu navigation, OMP selection, limits, cancellation, provider validation, atomic persistence, adaptive batch prompts.');
