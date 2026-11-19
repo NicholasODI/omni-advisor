@@ -1,7 +1,7 @@
 import type { ExecutionMode } from '../workflow/executionMode.ts';
 import type { AdvisorPhase } from './advisorStream.ts';
 import { advisorBlock, advisoryFrame } from './cloudAdvisor.ts';
-import { assertAbstract } from '../privacy/planning.ts';
+import { assertAbstract, type ConsultationPurpose } from '../privacy/planning.ts';
 import { splitSelector, type AdvisorDispatchResult } from './advisorDispatch.ts';
 
 /** Structural facade keeps standalone tests independent of the OMP installation. */
@@ -12,7 +12,8 @@ export interface OmpRegistry {
 }
 type Complete = (model: any, context: any, options: any) => Promise<any>;
 export async function dispatchOmpAdvisor(registry: OmpRegistry, selector: string, query: string,
-  timeoutMs = 120000, focus?: string, signal?: AbortSignal, complete?: Complete, onPhase?: (phase: AdvisorPhase) => void, streamOverride?: any, mode: ExecutionMode = 'balanced'): Promise<AdvisorDispatchResult> {
+  timeoutMs = 120000, focus?: string, signal?: AbortSignal, complete?: Complete, onPhase?: (phase: AdvisorPhase) => void,
+  streamOverride?: any, mode: ExecutionMode = 'balanced', purpose: ConsultationPurpose = 'plan'): Promise<AdvisorDispatchResult> {
   try {
     assertAbstract(query); if (focus) assertAbstract(focus);
     if (!Number.isFinite(timeoutMs) || timeoutMs < 1000 || timeoutMs > 300000) throw new Error('Invalid timeout');
@@ -26,7 +27,7 @@ export async function dispatchOmpAdvisor(registry: OmpRegistry, selector: string
     if (!auth.ok) return { ok: false, error: 'OMP could not authenticate the selected provider.' };
     // Loaded only in OMP mode; the host owns provider adapters and authentication.
     const context = {
-      systemPrompt: advisorBlock(focus, mode),
+      systemPrompt: advisorBlock(focus, mode, purpose),
       messages: [{ role: 'user', content: advisoryFrame(query), timestamp: Date.now() }],
     };
     const options = { apiKey: auth.apiKey, headers: auth.headers, signal: combined, maxTokens: 4096 };

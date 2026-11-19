@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { dispatchIsolatedAdvisor } from '../src/advisor/advisorDispatch.ts';
-import { assertAbstract } from '../src/privacy/planning.ts';
+import { assertAbstract, validateBrief } from '../src/privacy/planning.ts';
 import extension from '../index.ts';
 let calls = 0;
 let payload: any;
@@ -16,9 +16,22 @@ try {
   const providers = { example: { baseUrl: 'https://example.com/v1', api: 'openai' as const } };
   let result = await dispatchIsolatedAdvisor('example/model', 'objective: Design an idempotent worker', 1000, undefined, providers);
   assert.equal(result.ok, true); assert.equal(payload.messages.length, 2); assert.equal(payload.tools, undefined);
+  assert.match(payload.messages[0].content, /BALANCED PLAN:.*up to three assumptions.*likely outcome/);
   assert.deepEqual(result.usage, { input: 10, output: 20 }); assert.equal(request.redirect, 'error');
-  result = await dispatchIsolatedAdvisor('example/model', 'Plan a worker', 1000, undefined, { example: { ...providers.example, api: 'anthropic' } });
-  assert.equal(result.ok, true); assert.equal(payload.messages.length, 1); assert.equal(typeof payload.system, 'string');
+  const review = {
+    purpose: 'review' as const,
+    objective: 'Review retry guarantees',
+    questions: 'What is the biggest acceptance gap?',
+    outcomes: [{ check: 'Concurrent retries', status: 'unverified' as const, summary: 'Only single-worker retries were checked.' }],
+  };
+  result = await dispatchIsolatedAdvisor(
+    'example/model', validateBrief(review), 1000, undefined,
+    { example: { ...providers.example, api: 'anthropic' } }, undefined, undefined, 'balanced', review.purpose,
+  );
+  assert.equal(result.ok, true); assert.equal(payload.messages.length, 1);
+  assert.match(payload.system, /BALANCED FINAL REVIEW:.*most consequential gap/);
+  assert.doesNotMatch(payload.system, /ordered steps/i);
+  assert.match(payload.messages[0].content, /Concurrent retries: unverified/);
   assert.equal(request.headers['anthropic-version'], '2023-06-01'); assert.match(request.url, /\/v1\/messages$/);
   const before = calls;
   for (const text of ['password: secret', '```code```', '/workspace/private/file', 'https://internal.example']) {

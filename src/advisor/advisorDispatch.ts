@@ -2,7 +2,7 @@ import type { ExecutionMode } from '../workflow/executionMode.ts';
 import { readAdvisorStream, type AdvisorPhase } from './advisorStream.ts';
 import { advisorBlock, advisoryFrame } from './cloudAdvisor.ts';
 import { loadProvider } from './gateway.ts';
-import { assertAbstract } from '../privacy/planning.ts';
+import { assertAbstract, type ConsultationPurpose } from '../privacy/planning.ts';
 export interface ProviderConfig {
   baseUrl: string;
   api: 'openai' | 'anthropic';
@@ -19,7 +19,8 @@ export function splitSelector(selector: string): { provider: string; model: stri
   return i < 0 ? { provider: '', model: selector } : { provider: selector.slice(0, i), model: selector.slice(i + 1) };
 }
 export async function dispatchIsolatedAdvisor(selector: string, query: string, timeoutMs = 120000, focus?: string,
-  providers?: Record<string, ProviderConfig>, signal?: AbortSignal, onPhase?: (phase: AdvisorPhase) => void, mode: ExecutionMode = 'balanced'): Promise<AdvisorDispatchResult> {
+  providers?: Record<string, ProviderConfig>, signal?: AbortSignal, onPhase?: (phase: AdvisorPhase) => void,
+  mode: ExecutionMode = 'balanced', purpose: ConsultationPurpose = 'plan'): Promise<AdvisorDispatchResult> {
   try {
     assertAbstract(query);
     if (focus) assertAbstract(focus);
@@ -40,7 +41,7 @@ export async function dispatchIsolatedAdvisor(selector: string, query: string, t
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (key) headers[api === 'anthropic' ? 'x-api-key' : 'Authorization'] = api === 'anthropic' ? key : `Bearer ${key}`;
     if (api === 'anthropic') headers['anthropic-version'] = '2023-06-01';
-    const system = advisorBlock(focus, mode);
+    const system = advisorBlock(focus, mode, purpose);
     const messages = [{ role: 'user', content: advisoryFrame(query) }];
     const body = api === 'anthropic'
       ? { model, max_tokens: tokens, system, messages }
