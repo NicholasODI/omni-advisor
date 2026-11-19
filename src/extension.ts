@@ -39,7 +39,6 @@ import { dirname, join } from "node:path";
 import { createHash } from "node:crypto";
 import {
   assertAbstract,
-  planningText,
   validateBrief,
   PrivacyError,
 } from "./privacy/planning.ts";
@@ -152,68 +151,47 @@ let modelOptions: { ts: number; items: AdvisorModelOption[] } | undefined;
 let modelOptionsInFlight = false;
 
 function refreshModelOptions(): void {
-  if (modelOptions && Date.now() - modelOptions.ts < 600000) return;
-  if (modelOptionsInFlight) return;
-  modelOptionsInFlight = true;
+  if (modelOptionsInFlight || (modelOptions && Date.now() - modelOptions.ts < 600000)) return;
   const sel = advisorSelector();
   const { provider } = splitSelector(sel);
+  if (config.providers?.[provider]) return;
   const gw = loadProvider(provider);
-  if (config.providers?.[provider] || !gw) {
-    modelOptionsInFlight = false;
-    return;
-  }
-  void fetchGatewayModels(gw ?? { provider, baseUrl: "", apiKey: null }, 8000)
+  if (!gw) return;
+  modelOptionsInFlight = true;
+  void fetchGatewayModels(gw, 8000)
     .then((data) => {
       const items: AdvisorModelOption[] = data.map((m) => ({
         label: `${provider}/${m.id}`,
         description: m.description || m.displayName || m.id,
       }));
       items.unshift({ label: sel, description: "current advisor" });
-      modelOptions = { ts: Date.now(), items: dedupeByLabel(items) };
-      modelOptionsInFlight = false;
+      modelOptions = { ts: Date.now(), items };
     })
     .catch(() => {
       // Roster unavailable — static candidates only (see advisorModelOptions).
+    })
+    .finally(() => {
       modelOptionsInFlight = false;
     });
 }
 
-function dedupeByLabel(items: AdvisorModelOption[]): AdvisorModelOption[] {
-  const seen: Record<string, true> = {};
-  const out: AdvisorModelOption[] = [];
-  for (const it of items) {
-    if (seen[it.label]) continue;
-    seen[it.label] = true;
-    out.push(it);
-  }
-  return out;
-}
-
 function advisorModelOptions(): AdvisorModelOption[] {
-  const opts = modelOptions?.items ?? [];
-  const sel = advisorSelector();
-  const { provider, model: bare } = splitSelector(sel);
-  const configured =
-    config.advisorModel && config.advisorModel !== sel
-      ? [config.advisorModel]
-      : [];
-  const candidates = [
-    sel,
-    ...configured,
-    process.env.OMNI_ADVISOR_MODEL ?? "",
-  ].filter((s) => s.length > 0);
-  const rosterHas = (label: string) => opts.some((o) => o.label === label);
-  const items: AdvisorModelOption[] = [];
-  for (const label of candidates) {
-    if (!label.includes("/")) continue;
-    if (rosterHas(label)) continue;
-    items.push({ label, description: "configured / fallback" });
+  refreshModelOptions();
+  const roster = new Map<string, AdvisorModelOption>();
+  for (const option of modelOptions?.items ?? []) {
+    if (!roster.has(option.label)) roster.set(option.label, option);
   }
-  for (const o of opts) {
-    if (items.some((i) => i.label === o.label)) continue;
-    items.push(o);
-  }
-  return items;
+  const candidates = new Set([
+    advisorSelector(),
+    config.advisorModel,
+    process.env.OMNI_ADVISOR_MODEL,
+  ]);
+  const defaults = [...candidates]
+    .filter((label): label is string =>
+      typeof label === "string" && label.includes("/") && !roster.has(label),
+    )
+    .map((label) => ({ label, description: "configured / fallback" }));
+  return [...defaults, ...roster.values()];
 }
 
 /**
@@ -222,10 +200,7 @@ function advisorModelOptions(): AdvisorModelOption[] {
  */
 function isAdvisorEnabled(key: string): boolean {
   const explicit = gateOnBySession.get(key);
-  if (explicit !== undefined) return explicit;
-  if (config.enabledByDefault === true) return true;
-  if (config.enabledByDefault === false) return false;
-  return false;
+  return explicit === undefined ? config.enabledByDefault === true : explicit;
 }
 
 /** Per-session memo: config semanticTerms must be registered for EVERY
@@ -258,9 +233,8 @@ function ensureConfigTerms(key: string): void {
 
 /** Process-lifetime advisor model override set via /omni-advisor model. */
 let advisorModelOverride: string | undefined;
-const executionModeOverrides = new Map<string, ExecutionMode>();
 function executionMode(key: string): ExecutionMode {
-  return executionModeOverrides.get(key) ?? config.executionMode ?? "balanced";
+  return activeSessions.get(key)?.mode ?? config.executionMode ?? "balanced";
 }
 let sourceOverride: "config" | "omp" | undefined;
 function advisorSource(): "config" | "omp" {
@@ -299,19 +273,32 @@ function persistGates(): void {
 
 const gateOnBySession = loadGates();
 const planningGate = new PlanningGate();
-const planningOverrides = new Map<string, boolean>();
 function planningEnforced(key: string): boolean {
-  return planningOverrides.get(key) ?? config.enforcePlanning === true;
+  return activeSessions.get(key)?.enforcePlanning ?? config.enforcePlanning === true;
 }
-const checklistRevisions = new Map<string, number>();
-const checklists = new Map<
-  string,
-  Array<{ id: string; requirement: string; status: string; evidence?: string }>
->();
-const metrics = new Map<string, SessionMetrics>();
-function sessionMetrics(key: string): SessionMetrics {
-  if (!metrics.has(key)) metrics.set(key, new SessionMetrics());
-  return metrics.get(key)!;
+
+interface ChecklistItem {
+  id: string;
+  requirement: string;
+  status: string;
+  evidence?: string;
+}
+interface ActiveSession {
+  mode?: ExecutionMode;
+  enforcePlanning?: boolean;
+  checklist?: { items: ChecklistItem[]; revision: number };
+  metrics: SessionMetrics;
+}
+// These settings and task data are discarded at shutdown. Dispatch counts are
+// process-scoped per session key so resuming cannot reset the budget.
+const activeSessions = new Map<string, ActiveSession>();
+function activeSession(key: string): ActiveSession {
+  let state = activeSessions.get(key);
+  if (!state) {
+    state = { metrics: new SessionMetrics() };
+    activeSessions.set(key, state);
+  }
+  return state;
 }
 const consultationCounts = new Map<string, number>();
 const pendingConsultations = new Set<string>();
@@ -380,8 +367,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
   const newRecoveryTask = (ctx: { sessionManager: any }) => {
     const key = sessionKey(ctx);
     recovery(ctx).newTask();
-    checklists.delete(key);
-    checklistRevisions.delete(key);
+    delete activeSession(key).checklist;
     if (planningEnforced(key)) planningGate.begin(key);
   };
   const recoveryMode = (): RecoveryMode =>
@@ -466,11 +452,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       const recoveryEpisode =
         params.recoveryEpisode ??
         (recoveryMode() !== "disabled"
-          ? recovery(ctx)
-              .snapshot()
-              .episodes.slice()
-              .reverse()
-              .find((e) => ["required", "blocked"].includes(e.phase))?.id
+          ? recovery(ctx).pendingEpisodeId()
           : undefined);
       // Reserve once before every gate so rejection/unavailability cannot create an escalation loop.
       if (recoveryEpisode) {
@@ -498,7 +480,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
           };
         }
       }
-      const stats = sessionMetrics(key);
+      const stats = activeSession(key).metrics;
       if (key === "unknown" || !isAdvisorEnabled(key)) {
         stats.blocked++;
         return {
@@ -511,19 +493,6 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
           details: { status: "disabled" },
         };
       }
-      const query = planningText(params);
-      if (!query) {
-        return {
-          content: [
-            {
-              type: "text",
-              text: "Error: ask_advisor requires a non-empty query.",
-            },
-          ],
-          details: {},
-        };
-      }
-
       const limit = config.maxConsultationsPerSession;
       if (
         (limit !== undefined &&
@@ -546,7 +515,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       const planningToken = planningGate.token(key);
       pendingConsultations.add(key);
       try {
-        validateBrief(params);
+        const query = validateBrief(params);
         const focus = advisorFocus();
         if (focus) {
           assertAbstract(focus, "advisorFocus");
@@ -632,7 +601,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         if (result.usage) usage.recordUsage(key, sel, result.usage);
         log(key, "PLAN", "Advisor plan received; placeholders retained.");
         // Keep placeholders unresolved: cloud output cannot select local secrets.
-        const unmasked = result.text!;
+        const advice = result.text!;
 
         // Best-effort: keep the per-session quota display fresh after a cloud call.
         if (
@@ -645,7 +614,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
           content: [
             {
               type: "text",
-              text: toolResponseFrame(unmasked, mode, purpose),
+              text: toolResponseFrame(advice, mode, purpose),
             },
           ],
           details: { advisor: sel },
@@ -763,23 +732,23 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         .optional(),
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
-      const key = sessionKey(ctx);
+      const state = activeSession(sessionKey(ctx));
+      const revision = recovery(ctx).revision;
       if (params.items) {
-        checklists.set(
-          key,
-          params.items.map((item) => ({
+        state.checklist = {
+          revision,
+          items: params.items.map((item) => ({
             ...item,
             status:
               item.status === "passed" && !item.evidence?.trim()
                 ? "unverified"
                 : item.status,
           })),
-        );
-        checklistRevisions.set(key, recovery(ctx).snapshot().revision);
+        };
       }
       const stale =
-        checklistRevisions.get(key)! < recovery(ctx).snapshot().revision;
-      const items = (checklists.get(key) ?? []).map((item) =>
+        state.checklist !== undefined && state.checklist.revision < revision;
+      const items = (state.checklist?.items ?? []).map((item) =>
         stale && item.status === "passed"
           ? { ...item, status: "unverified", evidence: undefined }
           : item,
@@ -827,7 +796,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         isolatedSession: key !== "unknown",
         source: advisorSource(),
         model: selector,
-        authorization: recovery(ctx).snapshot().scope ?? "active",
+        authorization: recovery(ctx).scope,
         executionMode: executionMode(key),
         enforcedPlanning: planningEnforced(key),
         awaitingPlan: planningEnforced(key) && !planningGate.ready(key),
@@ -845,7 +814,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         privacyPolicy:
           "abstract-only (heuristic validation; confidential meaning is not provably detected)",
         cipherStorage: "memory-only",
-        measurements: sessionMetrics(key).snapshot(),
+        measurements: activeSession(key).metrics.snapshot(),
       };
       return {
         content: [{ type: "text", text: JSON.stringify(status) }],
@@ -927,17 +896,18 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     if (event.reason !== "revive" && advisorNotices.get(key) === "queued") {
       advisorNotices.set(key, "ready");
     }
-    sessionMetrics(key).begin();
+    const state = activeSession(key);
+    state.metrics.begin();
     const enforced = planningEnforced(key);
     if (sessions.beginsTask(ctx, event.reason)) {
-      checklists.delete(key);
+      delete state.checklist;
       if (enforced) planningGate.begin(key);
     }
     if (
       !isAdvisorEnabled(key) &&
       !enforced &&
       recoveryMode() === "disabled" &&
-      (recovery(ctx).snapshot().scope ?? "active") === "active"
+      recovery(ctx).scope === "active"
     )
       return;
     const recoveryHandoff =
@@ -964,7 +934,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     return {
       systemPrompt: [
         ...event.systemPrompt,
-        scopeInstructions(recovery(ctx).snapshot()),
+        scopeInstructions({ scope: recovery(ctx).scope }),
         ...advisorPrompts,
         ...(recoveryHandoff.length
           ? [
@@ -1039,15 +1009,11 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
           reason: `Repeated operation requires a recovery decision (episode ${blocked}). ${recoveryHint}`,
         };
     }
-    sessionMetrics(key).toolStart(event.toolCallId);
+    activeSession(key).metrics.toolStart(event.toolCallId);
   });
   pi.on("tool_result", async (event, ctx) => {
     const key = sessionKey(ctx);
-    sessionMetrics(key).toolEnd(
-      event.toolCallId,
-      event.toolName,
-      event.isError,
-    );
+    activeSession(key).metrics.toolEnd(event.toolCallId);
     if (recoveryMode() !== "disabled") {
       const episode = recovery(ctx).observe(
         event.toolCallId,
@@ -1071,8 +1037,9 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
   });
   pi.on("agent_end", async (_event, ctx) => {
     const key = sessionKey(ctx);
-    sessionMetrics(key).end();
-    log(key, "METRICS", JSON.stringify(sessionMetrics(key).snapshot()));
+    const metrics = activeSession(key).metrics;
+    metrics.end();
+    log(key, "METRICS", JSON.stringify(metrics.snapshot()));
   });
 
   // ---------------------------------------------------------------------
@@ -1123,12 +1090,8 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     gateOnBySession.delete(key);
     advisorNotices.delete(key);
     planningGate.clear(key);
-    planningOverrides.delete(key);
-    executionModeOverrides.delete(key);
-    metrics.delete(key);
+    activeSessions.delete(key);
     sessions.forget(ctx);
-    checklists.delete(key);
-    checklistRevisions.delete(key);
   });
 
   // ---------------------------------------------------------------------
@@ -1145,7 +1108,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         model: advisorSelector(),
         recoveryMode: recoveryMode(),
         recoveryThreshold: recoveryThreshold(),
-        authorization: recovery(ctx).snapshot().scope ?? "active",
+        authorization: recovery(ctx).scope,
         limit: config.maxConsultationsPerSession,
         timeout: config.advisorTimeoutMs ?? 120000,
       }),
@@ -1177,7 +1140,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       change(patch) {
         if (patch.enabled !== undefined) setAdvisorEnabled(key, patch.enabled);
         if (patch.enforced !== undefined) {
-          planningOverrides.set(key, patch.enforced);
+          activeSession(key).enforcePlanning = patch.enforced;
           if (patch.enforced) planningGate.begin(key);
           else planningGate.clear(key);
         }
@@ -1188,7 +1151,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         if (patch.recoveryMode) config.recoveryMode = patch.recoveryMode;
         if (patch.recoveryThreshold !== undefined)
           config.recoveryThreshold = patch.recoveryThreshold;
-        if (patch.mode) executionModeOverrides.set(key, patch.mode);
+        if (patch.mode) activeSession(key).mode = patch.mode;
         if (patch.source) sourceOverride = patch.source;
         if (patch.model) advisorModelOverride = patch.model;
         if ("limit" in patch) config.maxConsultationsPerSession = patch.limit;
@@ -1229,7 +1192,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         persistGates();
       },
     };
-  });
+  }, advisorModelOptions);
 
   // ---------------------------------------------------------------------
   // Command: /omni-cipher-status
@@ -1265,7 +1228,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       const sum = usage.usageTotals(key);
       if (sum.messages === 0) {
         ctx.ui.notify(
-          `omni-usage: no token usage recorded. Consultation/timing: ${JSON.stringify(sessionMetrics(key).snapshot())}`,
+          `omni-usage: no token usage recorded. Consultation/timing: ${JSON.stringify(activeSession(key).metrics.snapshot())}`,
           "info",
         );
         return;
@@ -1283,7 +1246,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       ];
       lines.push(
         "",
-        `  consultations/timing: ${JSON.stringify(sessionMetrics(key).snapshot())}`,
+        `  consultations/timing: ${JSON.stringify(activeSession(key).metrics.snapshot())}`,
       );
       const cached = lastQuotaBySession.get(key);
       if (cached) {

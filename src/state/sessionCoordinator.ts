@@ -1,15 +1,14 @@
-import { RecoverySessions } from "./recoverySession.ts";
+import { RecoverySessions, type RecoverySessionSource } from "./recoverySession.ts";
 
 interface Context {
-  sessionManager: { getSessionFile?(): string; getBranch?(): any[] };
+  sessionManager: RecoverySessionSource;
 }
 /** Coordinates session identity and continuation. Does not decide retry policy or own project memory. */
 export class SessionCoordinator {
   readonly recoverySessions: RecoverySessions;
   private ephemeralKeys = new WeakMap<object, string>();
   private sequence = 0;
-  private compacted = new Set<string>();
-  private freshInput = new Set<string>();
+  private continuation = new Map<string, "input" | "compact">();
 
   private sessionKey: (ctx: Context) => string;
   constructor(
@@ -37,25 +36,25 @@ export class SessionCoordinator {
     this.recoverySessions.restore(this.recoveryKey(ctx), ctx.sessionManager);
   }
   input(ctx: Context, text: string): void {
-    this.freshInput.add(this.recoveryKey(ctx));
-    this.recovery(ctx).userInput(text);
-    this.recoverySessions.save(this.recoveryKey(ctx));
+    const key = this.recoveryKey(ctx);
+    this.continuation.set(key, "input");
+    this.recoverySessions.get(key, ctx.sessionManager).userInput(text);
+    this.recoverySessions.save(key);
   }
   compact(ctx: Context): void {
-    this.compacted.add(this.recoveryKey(ctx));
+    const key = this.recoveryKey(ctx);
+    if (!this.continuation.has(key)) this.continuation.set(key, "compact");
   }
   /** Consume each continuation signal once; new user input takes precedence over compaction. */
   beginsTask(ctx: Context, reason: string): boolean {
     const key = this.recoveryKey(ctx);
-    const continuation = this.compacted.has(key) && !this.freshInput.has(key);
-    this.compacted.delete(key);
-    this.freshInput.delete(key);
-    return reason !== "revive" && !continuation;
+    const continuation = this.continuation.get(key);
+    this.continuation.delete(key);
+    return reason !== "revive" && continuation !== "compact";
   }
   forget(ctx: Context): void {
-    this.recoverySessions.forget(this.recoveryKey(ctx));
     const key = this.recoveryKey(ctx);
-    this.compacted.delete(key);
-    this.freshInput.delete(key);
+    this.recoverySessions.forget(key);
+    this.continuation.delete(key);
   }
 }

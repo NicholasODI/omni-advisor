@@ -36,9 +36,9 @@ function sidecarPath(key: string): string {
 }
 interface SessionCipher {
   key: string;
-  mapping: Map<string, string>;
+  mapping: Map<string, { raw: string; type: TermType }>;
   reverse: Map<string, string>;
-  counters: Map<string, number>;
+  counters: Map<TermType, number>;
 }
 
 export type TermType =
@@ -58,44 +58,6 @@ export type TermType =
   | "PERSON"
   | "SECRET"
   | "TERM";
-
-const PREFIX_BY_TYPE: Record<TermType, string> = {
-  EMAIL: "OMNI_EMAIL",
-  JWT: "OMNI_JWT",
-  VENDOR_KEY: "OMNI_VENDOR_KEY",
-  PRIVATE_KEY: "OMNI_PRIVATE_KEY",
-  SSH_KEY: "OMNI_SSH_KEY",
-  HEX: "OMNI_HEX",
-  B64: "OMNI_B64",
-  UUID: "OMNI_UUID",
-  CARD: "OMNI_CARD",
-  HOME: "OMNI_HOME",
-  CRED: "OMNI_CRED",
-  WORKSPACE: "OMNI_WORKSPACE",
-  HOST: "OMNI_HOST",
-  PERSON: "OMNI_PERSON",
-  SECRET: "OMNI_SECRET",
-  TERM: "OMNI_TERM",
-};
-
-const TYPE_BY_PREFIX: Record<string, TermType> = {
-  OMNI_EMAIL: "EMAIL",
-  OMNI_JWT: "JWT",
-  OMNI_VENDOR_KEY: "VENDOR_KEY",
-  OMNI_PRIVATE_KEY: "PRIVATE_KEY",
-  OMNI_SSH_KEY: "SSH_KEY",
-  OMNI_HEX: "HEX",
-  OMNI_B64: "B64",
-  OMNI_UUID: "UUID",
-  OMNI_CARD: "CARD",
-  OMNI_HOME: "HOME",
-  OMNI_CRED: "CRED",
-  OMNI_WORKSPACE: "WORKSPACE",
-  OMNI_HOST: "HOST",
-  OMNI_PERSON: "PERSON",
-  OMNI_SECRET: "SECRET",
-  OMNI_TERM: "TERM",
-};
 
 /** Whole-match patterns: the full match is the sensitive value.
  *  Deliberately conservative (long, unambiguous shapes) — the semantic
@@ -155,11 +117,10 @@ function register(s: SessionCipher, type: TermType, raw: string): string {
   if (!raw) return "";
   const existing = s.reverse.get(raw);
   if (existing) return existing; // idempotent: same value -> same placeholder
-  const prefix = PREFIX_BY_TYPE[type];
-  const n = (s.counters.get(prefix) ?? 0) + 1;
-  s.counters.set(prefix, n);
-  const placeholder = `${prefix}_${String(n).padStart(2, "0")}`;
-  s.mapping.set(placeholder, raw);
+  const n = (s.counters.get(type) ?? 0) + 1;
+  s.counters.set(type, n);
+  const placeholder = `OMNI_${type}_${String(n).padStart(2, "0")}`;
+  s.mapping.set(placeholder, { raw, type });
   s.reverse.set(raw, placeholder);
   log(s.key, "SANITIZE", `Registered ${placeholder} (${type})`);
   return placeholder;
@@ -172,11 +133,6 @@ interface Span {
   type: TermType;
 }
 
-function termTypeOf(placeholder: string): TermType {
-  const head = placeholder.replace(/_\d+$/, "");
-  return TYPE_BY_PREFIX[head] ?? "TERM";
-}
-
 /** Collect spans (semantic terms + deterministic patterns), longest match
  *  first, overlapping spans dropped in favor of the longest. */
 function collectSpans(text: string, s: SessionCipher): Span[] {
@@ -184,9 +140,7 @@ function collectSpans(text: string, s: SessionCipher): Span[] {
 
   // Semantic layer: every raw value known to this session (terms registered
   // by the local model / config, plus values scrubbed earlier this session).
-  for (const [raw, placeholder] of s.reverse) {
-    if (!raw) continue;
-    const type = termTypeOf(placeholder);
+  for (const { raw, type } of s.mapping.values()) {
     let idx = text.indexOf(raw);
     while (idx !== -1) {
       candidates.push({ start: idx, end: idx + raw.length, raw, type });
@@ -271,7 +225,7 @@ export function unmask(text: string, key: string): string {
   // shorter prefix token (and OMNI_TERM_100 is replaced before OMNI_TERM_10).
   let out = text;
   for (const ph of [...s.mapping.keys()].sort((a, b) => b.length - a.length)) {
-    out = out.split(ph).join(s.mapping.get(ph)!);
+    out = out.split(ph).join(s.mapping.get(ph)!.raw);
   }
   return out;
 }
@@ -313,7 +267,7 @@ export function status(key: string): CipherStatus {
   const s = session(key);
   return {
     count: s.mapping.size,
-    entries: [...s.mapping.entries()].map(([placeholder, raw]) => ({ placeholder, raw, type: termTypeOf(placeholder) })),
+    entries: [...s.mapping.entries()].map(([placeholder, term]) => ({ placeholder, ...term })),
   };
 }
 

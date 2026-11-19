@@ -1,7 +1,7 @@
 import type { ExecutionMode } from '../workflow/executionMode.ts';
 import { readAdvisorStream, type AdvisorPhase } from './advisorStream.ts';
 import { advisorBlock, advisoryFrame } from './cloudAdvisor.ts';
-import { loadProvider } from './gateway.ts';
+import { loadProvider, parseProviderBaseUrl } from './gateway.ts';
 import { assertAbstract, type ConsultationPurpose } from '../privacy/planning.ts';
 export interface ProviderConfig {
   baseUrl: string;
@@ -29,8 +29,7 @@ export async function dispatchIsolatedAdvisor(selector: string, query: string, t
     const configured = providers?.[provider];
     const legacy = configured ? null : loadProvider(provider);
     if (!configured && !legacy) throw new Error('Provider is not configured.');
-    const base = new URL(configured?.baseUrl ?? legacy!.baseUrl);
-    if (base.protocol !== 'https:' || base.username || base.password || base.search || base.hash) throw new Error('Provider baseUrl must be HTTPS without credentials, query, or fragment.');
+    const base = parseProviderBaseUrl(configured?.baseUrl ?? legacy!.baseUrl);
     const api = configured?.api ?? 'openai';
     if (!['openai', 'anthropic'].includes(api)) throw new Error('Unsupported provider API format.');
     const key = configured?.apiKeyEnv ? process.env[configured.apiKeyEnv] : legacy?.apiKey;

@@ -24,12 +24,14 @@ const hash = (s: string) =>
 const digest = (s: unknown): s is string =>
   typeof s === "string" && /^[a-f0-9]{24}$/.test(s);
 
-export interface RecoveryDecision {
+interface DecisionEvidence {
   hypothesis: string;
   changed: string;
   nextAction: string;
   expectedEvidence: string;
   stopWhen: string;
+}
+export interface RecoveryDecision extends DecisionEvidence {
   actionTool: "bash" | "eval" | "edit" | "write";
   actionInput: Record<string, unknown>;
 }
@@ -51,13 +53,7 @@ interface Episode {
   compound: boolean;
   adviceRequested: boolean;
   decisions: Array<{ hypothesis: string; remedy: string; revision: number }>;
-  decision?: {
-    hypothesis: string;
-    changed: string;
-    nextAction: string;
-    expectedEvidence: string;
-    stopWhen: string;
-  };
+  decision?: DecisionEvidence;
   authorizedOperation?: string;
   overrideReason?: string;
   logicalStall?: boolean;
@@ -80,6 +76,17 @@ export class RecoveryController {
   private blockedCalls = new Set<string>();
   snapshot(): RecoveryState {
     return structuredClone(this.state);
+  }
+  get revision(): number {
+    return this.state.revision;
+  }
+  get scope(): NonNullable<ScopeState["scope"]> {
+    return this.state.scope ?? "active";
+  }
+  pendingEpisodeId(): string | undefined {
+    return this.state.episodes.findLast(
+      (episode) => episode.phase === "required" || episode.phase === "blocked",
+    )?.id;
   }
   // Only controller-produced, bounded schema is restored. Arbitrary session text is never executed.
   restore(raw: unknown): boolean {
@@ -163,15 +170,6 @@ export class RecoveryController {
             return false;
         if (e.logicalStall !== undefined && typeof e.logicalStall !== "boolean")
           return false;
-        if (e.decision)
-          for (const k of [
-            "hypothesis",
-            "changed",
-            "nextAction",
-            "expectedEvidence",
-            "stopWhen",
-          ] as const)
-            this.safe(e.decision[k]);
         if (e.overrideReason !== undefined) this.safe(e.overrideReason);
       }
       // Rebuild the allowlisted structure; do not preserve unknown sensitive fields.
@@ -199,17 +197,7 @@ export class RecoveryController {
             remedy: d.remedy,
             revision: d.revision,
           })),
-          ...(e.decision
-            ? {
-                decision: {
-                  hypothesis: e.decision.hypothesis,
-                  changed: e.decision.changed,
-                  nextAction: e.decision.nextAction,
-                  expectedEvidence: e.decision.expectedEvidence,
-                  stopWhen: e.decision.stopWhen,
-                },
-              }
-            : {}),
+          ...(e.decision ? { decision: this.validateDecision(e.decision) } : {}),
           ...(e.authorizedOperation
             ? { authorizedOperation: e.authorizedOperation }
             : {}),
@@ -265,6 +253,15 @@ export class RecoveryController {
     assertAbstract(value, "recovery decision");
     return value;
   }
+  private validateDecision(decision: DecisionEvidence): DecisionEvidence {
+    return {
+      hypothesis: this.safe(decision.hypothesis),
+      changed: this.safe(decision.changed),
+      nextAction: this.safe(decision.nextAction),
+      expectedEvidence: this.safe(decision.expectedEvidence),
+      stopWhen: this.safe(decision.stopWhen),
+    };
+  }
   private episode(id: string): Episode {
     const e = this.state.episodes.find((e) => e.id === id);
     if (!e) throw new Error("Recovery episode is no longer active.");
@@ -274,13 +271,7 @@ export class RecoveryController {
     const e = this.episode(id);
     if (!["required", "blocked"].includes(e.phase))
       throw new Error("This episode does not need another decision.");
-    const decision = {
-      hypothesis: this.safe(d.hypothesis),
-      changed: this.safe(d.changed),
-      nextAction: this.safe(d.nextAction),
-      expectedEvidence: this.safe(d.expectedEvidence),
-      stopWhen: this.safe(d.stopWhen),
-    };
+    const decision = this.validateDecision(d);
     const op = operationKey(d.actionTool, d.actionInput);
     if (!op) throw new Error("Specify one exact supported recovery action.");
     const hypothesis = hash(normalizeDiagnostic(decision.hypothesis)),
@@ -487,11 +478,12 @@ export class RecoveryController {
     }
   }
   summary() {
+    const snapshot = this.snapshot();
     return {
-      ...this.snapshot(),
-      episodes: this.state.episodes.map((e) => ({
+      ...snapshot,
+      episodes: snapshot.episodes.map((e) => ({
         ...e,
-        evidenceFresh: e.evidenceRevision === this.state.revision,
+        evidenceFresh: e.evidenceRevision === snapshot.revision,
         revisionScope:
           "observed successful edits/writes only; external changes unknown",
       })),
