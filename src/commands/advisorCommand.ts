@@ -17,7 +17,7 @@ export interface AdvisorCommandActions {
   ompModels(): string[];
   provider(): Promise<void>;
   save(): void;
-  saveGate(): void;
+  setCloudAccess(enabled: boolean): boolean;
   recovery(): RecoveryController;
   saveRecovery(): void;
   newTask(): void;
@@ -290,10 +290,9 @@ export function registerAdvisorCommand(
         return;
       }
       if (command === "on" || command === "off") {
-        actions.change({ enabled: command === "on" });
-        actions.saveGate();
+        const noticeQueued = actions.setCloudAccess(command === "on");
         ctx.ui.notify(
-          `omni-advisor: cloud advisor nudge ${command === "on" ? "ENABLED" : "DISABLED"} for this session (persisted across restarts).`,
+          `omni-advisor: cloud advisor nudge ${command === "on" ? "ENABLED" : "DISABLED"} for this session (persisted across restarts).${noticeQueued ? " The agent will be notified on your next prompt." : ""}`,
           "info",
         );
         return;

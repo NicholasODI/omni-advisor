@@ -361,6 +361,12 @@ function truncate(s: string, max: number): string {
 
 export default function omniAdvisor(pi: ExtensionAPI): void {
   const z = pi.zod;
+  const advisorNotices = new Map<string, "queued" | "ready">();
+  function setAdvisorEnabled(key: string, enabled: boolean): void {
+    gateOnBySession.set(key, enabled);
+    if (enabled) ensureConfigTerms(key);
+    else advisorNotices.delete(key);
+  }
   const sessions = new SessionCoordinator(
     sessionKey,
     typeof pi.appendEntry === "function"
@@ -917,6 +923,10 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
   });
   pi.on("before_agent_start", async (event, ctx) => {
     const key = sessionKey(ctx);
+    // Wait for a new prompt instead of adding the notice to an in-flight turn.
+    if (event.reason !== "revive" && advisorNotices.get(key) === "queued") {
+      advisorNotices.set(key, "ready");
+    }
     sessionMetrics(key).begin();
     const enforced = planningEnforced(key);
     if (sessions.beginsTask(ctx, event.reason)) {
@@ -974,6 +984,29 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
                 : []),
             ]
           : []),
+      ],
+    };
+  });
+
+  pi.on("context", (event, ctx) => {
+    if (advisorNotices.size === 0) return;
+    const key = sessionKey(ctx);
+    if (advisorNotices.get(key) !== "ready") return;
+    advisorNotices.delete(key);
+    // Add a user-role message to this request without recording a new turn.
+    return {
+      messages: [
+        ...event.messages,
+        {
+          role: "user",
+          content: [
+            {
+              type: "text",
+              text: "Friendly reminder: Cloud advisor access is now enabled for this session. This is a status update only. The configured workflow and current task scope still govern consultations.",
+            },
+          ],
+          timestamp: Date.now(),
+        },
       ],
     };
   });
@@ -1088,6 +1121,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     cipher.forgetSession(key);
     configTermsEnsuredFor.delete(key);
     gateOnBySession.delete(key);
+    advisorNotices.delete(key);
     planningGate.clear(key);
     planningOverrides.delete(key);
     executionModeOverrides.delete(key);
@@ -1115,7 +1149,15 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         limit: config.maxConsultationsPerSession,
         timeout: config.advisorTimeoutMs ?? 120000,
       }),
-      saveGate: persistGates,
+      setCloudAccess(enabled) {
+        setAdvisorEnabled(key, enabled);
+        const noticeQueued = enabled && key !== "unknown";
+        if (noticeQueued && !advisorNotices.has(key)) {
+          advisorNotices.set(key, "queued");
+        }
+        persistGates();
+        return noticeQueued;
+      },
       defaultsEnabled: () => config.enabledByDefault === true,
       recordModel: (model: string) =>
         log(
@@ -1133,10 +1175,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       },
       newTask: () => newRecoveryTask(ctx),
       change(patch) {
-        if (patch.enabled !== undefined) {
-          gateOnBySession.set(key, patch.enabled);
-          if (patch.enabled) ensureConfigTerms(key);
-        }
+        if (patch.enabled !== undefined) setAdvisorEnabled(key, patch.enabled);
         if (patch.enforced !== undefined) {
           planningOverrides.set(key, patch.enforced);
           if (patch.enforced) planningGate.begin(key);

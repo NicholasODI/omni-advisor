@@ -18,6 +18,31 @@ const episode=async(label:string)=>{
 const ask=async(id:string,objective='Review abstract recovery',signal?:AbortSignal)=>tools.ask_advisor.execute('',{objective,questions:'One next action and stopping condition?',recoveryEpisode:id},signal,undefined,ctx);
 try {
   await commands['omni-advisor'].handler('on',ctx);
+  await commands['omni-advisor'].handler('on',ctx);
+  const userMessage = { role: 'user', content: [{ type: 'text', text: 'Continue the task.' }], timestamp: 1 };
+  const modelContext = { messages: [userMessage] };
+  const turn = { reason: 'prompt', prompt: 'Continue the task.', systemPrompt: [] };
+  const otherSession = { ...ctx, sessionManager: { getSessionFile: () => '/synthetic/other-session' } };
+  assert.equal(await hooks.context(modelContext,ctx),undefined);
+  await hooks.before_agent_start({ ...turn, reason: 'revive' },ctx);
+  assert.equal(await hooks.context(modelContext,ctx),undefined);
+  await hooks.before_agent_start(turn,otherSession);
+  assert.equal(await hooks.context(modelContext,otherSession),undefined);
+  await hooks.before_agent_start(turn,ctx);
+  const { messages } = await hooks.context(modelContext,ctx);
+  assert.equal(messages.length,2);
+  assert.equal(messages[0],userMessage);
+  assert.equal(messages[1].role,'user');
+  assert.match(messages[1].content[0].text,/^Friendly reminder: .*status update only/);
+  assert.deepEqual(modelContext.messages,[userMessage]);
+  assert.equal(await hooks.context(modelContext,ctx),undefined);
+  await hooks.before_agent_start(turn,ctx);
+  assert.equal(await hooks.context(modelContext,ctx),undefined);
+  await commands['omni-advisor'].handler('on',ctx);
+  await hooks.before_agent_start(turn,ctx);
+  await commands['omni-advisor'].handler('off',ctx);
+  assert.equal(await hooks.context(modelContext,ctx),undefined);
+  await commands['omni-advisor'].handler('on',ctx);
   await commands['omni-advisor'].handler('source omp',ctx);
   await commands['omni-advisor'].handler('model synthetic/model',ctx);
   let id=await episode('privacy');assert.match((await ask(id,'password=SYNTHETIC')).content[0].text,/Privacy check/);assert.match((await ask(id)).content[0].text,/already requested/);assert.equal(authCalls,0);
@@ -33,4 +58,4 @@ try {
   if(old)writeFileSync(gatePath,old);else if(existsSync(gatePath))unlinkSync(gatePath);
   if(!hadDir)try{rmdirSync(logDir);}catch{}
 }
-console.log('Recovery advisor regressions passed: privacy rejection, cancellation, simulated authentication timeout/unavailability, budget exhaustion, and no repeated escalation.');
+console.log('Advisor regressions passed: one-time activation notice, privacy rejection, cancellation, simulated authentication timeout/unavailability, budget exhaustion, and no repeated escalation.');
