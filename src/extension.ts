@@ -423,7 +423,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         .enum(["plan", "decision", "checkpoint", "review"])
         .optional()
         .describe(
-          "Consultation type; use review for a final abstract evidence check.",
+          "Use plan for initial planning, decision for a consequential open choice, checkpoint to revalidate a plan, or review for a final abstract evidence check.",
         ),
       invariants: z
         .string()
@@ -562,6 +562,8 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         );
 
         const sel = advisorSelector();
+        const mode = executionMode(key);
+        const purpose = params.purpose ?? "plan";
         consultationCounts.set(key, (consultationCounts.get(key) ?? 0) + 1);
         const safeFocus = focus ? cipher.mask(focus, key) : undefined;
         assertAbstract(masked, "outbound brief");
@@ -585,7 +587,8 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
                   undefined,
                   progress.phase,
                   undefined,
-                  executionMode(key),
+                  mode,
+                  purpose,
                 )
               : await dispatchIsolatedAdvisor(
                   sel,
@@ -595,7 +598,8 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
                   config.providers,
                   _signal,
                   progress.phase,
-                  executionMode(key),
+                  mode,
+                  purpose,
                 );
           progress.stop(
             _signal?.aborted ? "cancelled" : result.ok ? "completed" : "failed",
@@ -641,11 +645,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
           content: [
             {
               type: "text",
-              text: toolResponseFrame(
-                unmasked,
-                executionMode(key),
-                params.purpose ?? "plan",
-              ),
+              text: toolResponseFrame(unmasked, mode, purpose),
             },
           ],
           details: { advisor: sel },

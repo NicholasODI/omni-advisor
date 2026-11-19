@@ -22,7 +22,9 @@ Choose a workflow in `/omni-advisor`, or use:
 
 ### Balanced
 
-For nontrivial tasks, the local model gathers facts before requesting a plan. It asks again for consequential choices that the plan did not settle, or when verified facts invalidate assumptions. Before completion, it requests one final review of summarized acceptance evidence and residual risks.
+For nontrivial tasks, the local model gathers facts before requesting a plan. The advisor identifies up to three assumptions that could change its recommendation, with targeted local checks and an approach for each likely result. If the checks settle the choice, the local model proceeds using the applicable recommendation.
+
+If new evidence invalidates the plan or leaves a consequential choice open, the local model sends a focused decision brief with the changed fact, remaining options, and one question. Before completion, it requests one final review of acceptance evidence and residual risks, with outcomes marked passed, failed, or unverified. The advisor identifies the most consequential gap and the smallest check that would close it, or recommends stopping if the evidence supports completion.
 
 Trivial tasks stay local. There is no required mid-task call if the original plan already settles the decision. Final-review gaps are addressed locally; another review needs materially new architectural evidence. Routine syntax, commands, debugging, and tests do not require cloud supervision.
 
