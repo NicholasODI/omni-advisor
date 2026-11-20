@@ -1,6 +1,6 @@
 import { RECOVERY_ENTRY, RecoveryController } from "../workflow/recovery.ts";
 export interface RecoverySessionSource {
-  getSessionFile?(): string;
+  getSessionFile?(): string | undefined;
   getBranch?(): Array<{ type: string; customType?: string; data?: unknown }>;
 }
 interface RecoverySession {

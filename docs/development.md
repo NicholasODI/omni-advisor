@@ -47,7 +47,7 @@ node tests/test-privacy-policy.ts
 | `tests/test-omni-masker.ts` | Masking round trips, registration, logging, accounting, prompt basics |
 | `tests/test-planning.ts` | Provider payloads, privacy boundary, HTTPS, usage, cancellation, cloud-off |
 | `tests/test-planning-gate.ts` | Discovery/execution gating, stale results, task lifecycle, explicit opt-out |
-| `tests/test-balanced-checkpoints.ts` | Local metadata, compaction, one review reminder, and scope/cloud/budget checks |
+| `tests/test-balanced-checkpoints.ts` | Local metadata, compaction, review reminders, receipt restoration, and stale response checks |
 | `tests/test-omp-advisor.ts` | Registry/auth reuse and isolated completion context |
 | `tests/test-improvements.ts` | Technical-context preservation, diagnostics, metrics, checklist/compaction |
 | `tests/test-advisor-progress.ts` | Heartbeats, terminal cleanup, cancellation, optional UI, theme colors |
