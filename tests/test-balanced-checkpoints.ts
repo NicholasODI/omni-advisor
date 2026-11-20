@@ -21,9 +21,14 @@ try {
   }));
   const { default: extension } = await import(pathToFileURL(join(fixture, "index.ts")).href);
   let requests = 0;
+  let waitForProvider: Promise<void> | undefined;
   globalThis.fetch = async (url) => {
     assert.equal(url, "https://example.com/v1/chat/completions");
+    const intent = entries.at(-1);
+    assert.equal(intent?.type, "omni-advisor.consultations.v1");
+    assert.equal(intent.data.receipts.at(-1).outcome, "pending");
     requests++;
+    await waitForProvider;
     return Response.json({ choices: [{ message: { content: "Synthetic advice kept out of metadata." }, finish_reason: "stop" }] });
   };
 
@@ -41,8 +46,8 @@ try {
     getActiveTools: () => advisorActive ? ["ask_advisor"] : [],
     appendEntry: (type: string, data: unknown) => { entries.push({ type, data }); },
   });
-  const newSession = (id: string) => ({
-    sessionManager: { getSessionFile: () => `/synthetic/${id}` },
+  const newSession = (id: string, branch?: Array<{ type: string; customType: string; data: any }>) => ({
+    sessionManager: { getSessionFile: () => `/synthetic/${id}`, getBranch: () => branch ?? [] },
     ui: { notify() {} },
   });
   const turn = { reason: "prompt", prompt: "Synthetic task prompt kept local.", systemPrompt: [] };
@@ -54,6 +59,8 @@ try {
   };
   const status = async (ctx: ReturnType<typeof newSession>) =>
     (await tools.advisor_status.execute("", {}, undefined, undefined, ctx)).details.balancedCheckpoints;
+  const receipts = async (ctx: ReturnType<typeof newSession>) =>
+    (await tools.advisor_status.execute("", {}, undefined, undefined, ctx)).details.consultationReceipts;
   const ask = (purpose: string, ctx: ReturnType<typeof newSession>, objective = "Review an abstract worker") =>
     tools.ask_advisor.execute("", { purpose, objective, questions: "Which checks matter?" }, undefined, undefined, ctx);
   const checkpoints = () => entries.filter(entry => entry.type === "omni-advisor.checkpoints.v1").map(entry => entry.data);
@@ -132,10 +139,91 @@ try {
   assert.equal(checkpoints().at(-1).startedWith.cloudEnabled, false);
   assert.equal((await status(unavailable)).substantiveWork, false);
 
-  const metadata = JSON.stringify(checkpoints());
-  assert.doesNotMatch(metadata, /Synthetic task prompt|private\/worker|Synthetic edit result|Synthetic advice|synthetic-only/);
   assert.equal(requests, 4);
-  console.log("Balanced checkpoints passed: local metadata, compaction, one review reminder, and cloud, budget, tool, and scope gates.");
+
+  const revised = newSession("review-after-edit");
+  await hooks.before_agent_start(turn, revised);
+  await hooks.tool_result(edit, revised);
+  const reviewedResult = await ask("review", revised);
+  let currentReceipt = (await receipts(revised)).recent.at(-1);
+  assert.equal(currentReceipt.id, reviewedResult.details.receiptId);
+  assert.equal(currentReceipt.outcome, "completed");
+  assert.equal(currentReceipt.freshness, "current");
+  assert.ok(currentReceipt.finishedAt >= currentReceipt.startedAt);
+  await hooks.tool_result({ ...edit, isError: true }, revised);
+  assert.equal((await receipts(revised)).recent.at(-1).freshness, "current");
+  await hooks.tool_result(edit, revised);
+  assert.equal((await status(revised)).review, "stale");
+  assert.equal((await receipts(revised)).recent.at(-1).freshness, "changed-evidence");
+  assert.equal(hooks.session_stop(stop, revised).continue, true);
+
+  const late = newSession("late-after-edit");
+  await hooks.before_agent_start(turn, late);
+  const delayed = Promise.withResolvers<void>();
+  waitForProvider = delayed.promise;
+  const lateResponse = ask("review", late);
+  const receiptBeforeEdit = (await receipts(late)).recent.at(-1);
+  assert.equal(receiptBeforeEdit.outcome, "pending");
+  const pendingEntry = {
+    type: "custom",
+    customType: "omni-advisor.consultations.v1",
+    data: structuredClone(entries.at(-1)!.data),
+  };
+  await hooks.tool_result(edit, late);
+  delayed.resolve();
+  waitForProvider = undefined;
+  const staleResponse = await lateResponse;
+  assert.equal(staleResponse.details.status, "stale");
+  assert.doesNotMatch(staleResponse.content[0].text, /Synthetic advice/);
+  currentReceipt = (await receipts(late)).recent.at(-1);
+  assert.equal(currentReceipt.outcome, "stale");
+  assert.equal(currentReceipt.freshness, "changed-evidence");
+  assert.equal((await status(late)).review, "stale");
+
+  const resumed = newSession("interrupted-after-restart", [pendingEntry]);
+  const beforeRestore = requests;
+  await hooks.session_start({}, resumed);
+  currentReceipt = (await receipts(resumed)).recent.at(-1);
+  assert.equal(currentReceipt.id, receiptBeforeEdit.id);
+  assert.equal(currentReceipt.outcome, "unknown");
+  assert.equal(currentReceipt.finishedAt, undefined);
+  assert.equal((await receipts(resumed)).persistence, "session-entry");
+  await hooks.before_agent_start(turn, resumed);
+  assert.equal((await receipts(resumed)).recent.at(-1).freshness, "prior-task");
+  assert.equal(requests, beforeRestore, "Restoring an uncertain receipt must not dispatch a request");
+
+  const changedTask = newSession("late-after-new-task");
+  await commands["omni-advisor"].handler("planning on", changedTask);
+  await hooks.before_agent_start(turn, changedTask);
+  const oldPlan = Promise.withResolvers<void>();
+  waitForProvider = oldPlan.promise;
+  const oldPlanResponse = ask("plan", changedTask);
+  await hooks.before_agent_start(turn, changedTask);
+  oldPlan.resolve();
+  waitForProvider = undefined;
+  assert.equal((await oldPlanResponse).details.status, "stale");
+  assert.equal((await receipts(changedTask)).recent.at(-1).freshness, "prior-task");
+  assert.equal((await status(changedTask)).plan, "not-due");
+  assert.equal((await tools.advisor_status.execute("", {}, undefined, undefined, changedTask)).details.awaitingPlan, true);
+
+  const switchFrom = newSession("late-after-session-switch");
+  const switchTo = newSession("other-session");
+  await hooks.before_agent_start(turn, switchFrom);
+  const switched = Promise.withResolvers<void>();
+  waitForProvider = switched.promise;
+  const switchedResponse = ask("plan", switchFrom);
+  await hooks.session_switch({}, switchTo);
+  const beforeSettlement = entries.length;
+  switched.resolve();
+  waitForProvider = undefined;
+  assert.equal((await switchedResponse).details.status, "stale");
+  assert.equal(entries.length, beforeSettlement, "Never append an old task receipt to the selected session");
+  assert.deepEqual((await receipts(switchTo)).recent, []);
+
+  const metadata = JSON.stringify(entries.filter(entry => entry.type !== "omni-advisor.recovery.v1"));
+  assert.doesNotMatch(metadata, /Synthetic task prompt|private\/worker|Synthetic edit result|Synthetic advice|synthetic-only/);
+  assert.equal(requests, 8);
+  console.log("Balanced checkpoints passed: reminders, scope and budget gates, receipt restoration, and stale responses after edits or task and session changes.");
 } finally {
   globalThis.fetch = fetchBefore;
   rmSync(fixture, { recursive: true, force: true });

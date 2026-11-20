@@ -55,6 +55,10 @@ Only one consultation per session can be pending. There is no count limit by def
 
 Returns actual extension settings, configuration readiness, planning state, optional limit (`null` = unlimited), counts, and timing. The `balancedCheckpoints` field shows the effective settings at the start of the tracked turn, consultation outcomes by purpose, and whether a review reminder was sent. After observed edits or writes in balanced mode, an outstanding plan or review can be due or blocked. The decision checkpoint is optional unless attempted. Local only: no authentication refresh or network probe, and no credential values or endpoint URLs. Configuration presence does not establish connectivity. OMP's `cfg://advisor` is a separate feature.
 
+`consultationReceipts` shows up to 12 recent attempts for the active session branch. Each receipt records the task, purpose, observed edit revision, timestamps, and outcome. A pending receipt restored after an interruption has outcome `unknown`, so assume it may have been billed when deciding whether to consult again. Receipts never trigger an automatic retry. `persistence` indicates whether the latest state was saved to an OMP session entry or is held in memory.
+
+Receipt freshness distinguishes the current task and evidence from older tasks and changed evidence. A late response for old work is withheld. A completed balanced review becomes stale after another successful edit or write through OMP. Changes made through shell commands or outside OMP cannot be detected.
+
 ### `advisor_recovery`
 
 Inspect persisted bounded failure evidence, record a short recovery decision and one exact local action, report a blocker, or explicitly start an unrelated task. No network is required. See [recovery control](recovery.md). `ask_advisor` accepts optional local-only `recoveryEpisode` metadata for one advisor request per episode.

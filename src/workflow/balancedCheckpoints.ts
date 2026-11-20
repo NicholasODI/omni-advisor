@@ -2,7 +2,7 @@ import type { ConsultationPurpose } from "../privacy/planning.ts";
 import type { ExecutionMode } from "./executionMode.ts";
 
 type TrackedPurpose = Exclude<ConsultationPurpose, "checkpoint">;
-type Outcome = "completed" | "blocked";
+type Outcome = "completed" | "blocked" | "stale";
 
 export const balancedReviewReminder =
   "Balanced-mode reminder: this turn changed files and has no completed advisor review. If a final review is appropriate for the user's current task, call ask_advisor once with purpose review and an abstract summary of acceptance results. Keep files, raw output, and private details local. If you can finish within scope without a review or one is unavailable, report the limitation and finish. The current scope and verification requirements still apply.";
@@ -33,6 +33,12 @@ export class BalancedCheckpoints {
     this.startedWith = settings;
   }
 
+  observeEdit(): void {
+    if (this.settled) return;
+    this.substantiveWork = true;
+    if (this.outcomes.review === "completed") this.outcomes.review = "stale";
+  }
+
   record(purpose: ConsultationPurpose, outcome: Outcome): void {
     if (this.settled || (purpose !== "plan" && purpose !== "decision" && purpose !== "review")) return;
     if (this.outcomes[purpose] !== "completed") this.outcomes[purpose] = outcome;
@@ -49,12 +55,13 @@ export class BalancedCheckpoints {
       decision: this.outcomes.decision ?? "optional",
       review,
       reviewReminderSent: this.reviewReminderSent,
-      ...(review === "blocked" && reviewBlocker ? { reviewBlocker } : {}),
+      ...((review === "blocked" || review === "stale") && reviewBlocker ? { reviewBlocker } : {}),
     };
   }
 
   markReviewReminder(): boolean {
-    if (this.settled || !this.substantiveWork || this.reviewReminderSent || this.outcomes.review) return false;
+    if (this.settled || !this.substantiveWork || this.reviewReminderSent ||
+        (this.outcomes.review && this.outcomes.review !== "stale")) return false;
     this.reviewReminderSent = true;
     return true;
   }

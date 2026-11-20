@@ -78,6 +78,8 @@ import { scopeInstructions } from "./workflow/executionScope.ts";
 import { recoveryHint, type RecoveryMode } from "./workflow/recovery.ts";
 import { SessionCoordinator } from "./state/sessionCoordinator.ts";
 import { SessionMetrics } from "./state/sessionMetrics.ts";
+import { CONSULTATION_ENTRY, ConsultationLedger } from "./state/consultationLedger.ts";
+import type { RecoverySessionSource } from "./state/recoverySession.ts";
 import {
   BalancedCheckpoints,
   balancedReviewReminder,
@@ -294,6 +296,7 @@ interface ActiveSession {
   checklist?: { items: ChecklistItem[]; revision: number };
   metrics: SessionMetrics;
   checkpoints?: BalancedCheckpoints;
+  consultations?: ConsultationLedger;
 }
 // These settings and task data are discarded at shutdown. Dispatch counts are
 // process-scoped per session key so resuming cannot reset the budget.
@@ -336,7 +339,7 @@ async function refreshQuota(key: string): Promise<void> {
 
 let unknownKeyWarned = false;
 function sessionKey(ctx: { sessionManager: unknown }): string {
-  const sm = ctx.sessionManager as { getSessionFile?: () => string };
+  const sm = ctx.sessionManager as RecoverySessionSource | undefined;
   const f = sm?.getSessionFile?.();
   if (!f && !unknownKeyWarned) {
     // Silent shared-bucket fallback is a data-leak footgun: terms registered
@@ -360,6 +363,25 @@ function truncate(s: string, max: number): string {
 export default function omniAdvisor(pi: ExtensionAPI): void {
   const z = pi.zod;
   const advisorNotices = new Map<string, "queued" | "ready">();
+  let selectedSession: string | undefined;
+  function consultationLedger(key: string, source: RecoverySessionSource): ConsultationLedger {
+    const state = activeSession(key);
+    if (state.consultations) return state.consultations;
+    const ledger: ConsultationLedger = new ConsultationLedger(source, (data) => {
+      if (!pi.appendEntry ||
+          (selectedSession !== undefined && selectedSession !== key) ||
+          activeSessions.get(key)?.consultations !== ledger ||
+          sessionKey({ sessionManager: source }) !== key) return false;
+      try {
+        pi.appendEntry(CONSULTATION_ENTRY, data);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    state.consultations = ledger;
+    return ledger;
+  }
   function setAdvisorEnabled(key: string, enabled: boolean): void {
     gateOnBySession.set(key, enabled);
     if (enabled) ensureConfigTerms(key);
@@ -416,6 +438,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     recovery(ctx).newTask();
     const state = activeSession(key);
     delete state.checklist;
+    if (key !== "unknown") consultationLedger(key, ctx.sessionManager).beginTask();
     if (state.checkpoints && !state.checkpoints.settled) startCheckpoints(key);
     if (planningEnforced(key)) planningGate.begin(key);
   };
@@ -434,8 +457,12 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     ctx: { sessionManager: any },
   ) => {
     sessions.restore(ctx);
-    const state = activeSessions.get(sessionKey(ctx));
-    if (state) delete state.checkpoints;
+    selectedSession = sessionKey(ctx);
+    const state = activeSessions.get(selectedSession);
+    if (state) {
+      delete state.checkpoints;
+      delete state.consultations;
+    }
   };
   pi.on("session_start", restoreRecovery);
   pi.on("session_switch", restoreRecovery);
@@ -544,6 +571,8 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         );
       }
       const planningToken = planningGate.token(key);
+      const ledger = consultationLedger(key, ctx.sessionManager);
+      let receipt: ReturnType<ConsultationLedger["begin"]> | undefined;
       pendingConsultations.add(key);
       try {
         const query = validateBrief(params);
@@ -563,10 +592,13 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
 
         const sel = advisorSelector();
         const mode = executionMode(key);
-        consultationCounts.set(key, (consultationCounts.get(key) ?? 0) + 1);
         const safeFocus = focus ? cipher.mask(focus, key) : undefined;
         assertAbstract(masked, "outbound brief");
         if (safeFocus) assertAbstract(safeFocus, "outbound focus");
+        if (_signal?.aborted) return blocked("Consultation cancelled before dispatch.", "cancelled");
+        // Persist intent before provider I/O. Receipt data never includes the brief.
+        receipt = ledger.begin(purpose);
+        consultationCounts.set(key, (consultationCounts.get(key) ?? 0) + 1);
         const dispatchStarted = Date.now();
         const progress = startAdvisorProgress((update) => {
           updateAdvisorFooter(ctx.ui, update);
@@ -609,11 +641,29 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
 
         stats.result(result.ok, Date.now() - dispatchStarted, result.usage);
         log(key, "METRICS", JSON.stringify(stats.snapshot()));
+        if (result.usage) usage.recordUsage(key, sel, result.usage);
+        if (_signal?.aborted) {
+          ledger.finish(receipt, "cancelled");
+          return blocked("Consultation cancelled.", "cancelled");
+        }
+        if (activeSessions.get(key)?.consultations !== ledger ||
+            (selectedSession !== undefined && selectedSession !== key) ||
+            sessionKey(ctx) !== key || !ledger.isCurrent(receipt) ||
+            !isAdvisorEnabled(key) || recovery(ctx).scope === "paused") {
+          ledger.finish(receipt, "stale");
+          tracking?.record(purpose, "stale");
+          return {
+            content: [{ type: "text" as const, text: "Consultation is no longer current. Its response cannot be used for the active task or evidence." }],
+            details: { status: "stale", receiptId: receipt.id },
+          };
+        }
         if (!result.ok) {
+          ledger.finish(receipt, "failed");
           log(key, "ERROR", `advisor dispatch failed: ${result.error}`);
           return blocked(`Error: cloud advisor unavailable — ${result.error}`);
         }
 
+        ledger.finish(receipt, "completed");
         tracking?.record(purpose, "completed");
         planningGate.complete(key, planningToken);
         log(
@@ -621,7 +671,6 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
           "CLOUD_IN",
           `Advisor response: ${result.text!.length} characters`,
         );
-        if (result.usage) usage.recordUsage(key, sel, result.usage);
         log(key, "PLAN", "Advisor plan received; placeholders retained.");
         // Keep placeholders unresolved: cloud output cannot select local secrets.
         const advice = result.text!;
@@ -640,9 +689,10 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
               text: toolResponseFrame(advice, mode, purpose),
             },
           ],
-          details: { advisor: sel },
+          details: { advisor: sel, receiptId: receipt.id },
         };
       } catch (err) {
+        if (receipt) ledger.finish(receipt, _signal?.aborted ? "cancelled" : "failed");
         stats.blocked++;
         log(key, "ERROR", "ask_advisor validation or execution failed");
         return blocked(
@@ -788,7 +838,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     name: "advisor_status",
     label: "Advisor Status (Local)",
     description:
-      "Read actual omni-advisor settings, planning state, provider configuration readiness, usage, and timing. Local only; no credential values, authentication refresh, or network calls. Configuration presence does not prove connectivity.",
+      "Read actual omni-advisor settings, planning state, local consultation receipts and freshness, provider configuration readiness, usage, and timing. Local only; no credential values, authentication refresh, or network calls. Configuration presence does not prove connectivity.",
     parameters: z.object({}),
     async execute(_id, _params, _signal, _onUpdate, ctx) {
       const key = sessionKey(ctx);
@@ -833,6 +883,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         cipherStorage: "memory-only",
         measurements: state.metrics.snapshot(),
         balancedCheckpoints: state.checkpoints?.snapshot(reviewBlocker(key, ctx)) ?? null,
+        consultationReceipts: key === "unknown" ? null : consultationLedger(key, ctx.sessionManager).snapshot(),
       };
       return {
         content: [{ type: "text", text: JSON.stringify(status) }],
@@ -910,6 +961,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
   });
   pi.on("before_agent_start", async (event, ctx) => {
     const key = sessionKey(ctx);
+    selectedSession = key;
     // Wait for a new prompt instead of adding the notice to an in-flight turn.
     if (event.reason !== "revive" && advisorNotices.get(key) === "queued") {
       advisorNotices.set(key, "ready");
@@ -926,6 +978,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     if (sessions.beginsTask(ctx, event.reason) && !reviewContinuation) {
       delete state.checklist;
       if (enforced) planningGate.begin(key);
+      if (key !== "unknown") consultationLedger(key, ctx.sessionManager).beginTask();
       startCheckpoints(key);
     }
     if (
@@ -1040,9 +1093,9 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     const key = sessionKey(ctx);
     const state = activeSession(key);
     state.metrics.toolEnd(event.toolCallId);
-    if (state.checkpoints && !state.checkpoints.settled &&
-        !event.isError && (event.toolName === "edit" || event.toolName === "write")) {
-      state.checkpoints.substantiveWork = true;
+    if (!event.isError && (event.toolName === "edit" || event.toolName === "write")) {
+      if (key !== "unknown") consultationLedger(key, ctx.sessionManager).observeEdit();
+      state.checkpoints?.observeEdit();
     }
     if (recoveryMode() !== "disabled") {
       const episode = recovery(ctx).observe(
@@ -1122,6 +1175,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
   // ---------------------------------------------------------------------
   pi.on("session_shutdown", async (_event, ctx) => {
     const key = sessionKey(ctx);
+    if (selectedSession === key) selectedSession = undefined;
     const tot = usage.usageTotals(key);
     log(
       key,
