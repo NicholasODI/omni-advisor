@@ -33,6 +33,8 @@ The config file can contain sensitive raw `semanticTerms`; protect it accordingl
 
 Recovery state is persisted in local OMP custom session entries. It stores hashed operation/diagnostic fingerprints and short validated abstract decisions, never raw command arguments, diagnostics, code, or paths. Hashes are fingerprints, not encryption; dictionary inference may be possible. Natural-language confidentiality still cannot be guaranteed. Context-forge handoff is local and optional; stored recovery state is never automatically sent to the advisor.
 
+Local `omni-advisor.checkpoints.v1` session entries record turn-start settings and checkpoint statuses, with the extension debug log as a fallback. They contain no prompts, tool arguments, file contents, provider responses, or credentials. The live checkpoint state survives immediate compaction and is rebuilt on a new turn.
+
 ## What these safeguards cannot prove
 
 Heuristics cannot reliably recognize confidential meaning in prose, unregistered identifiers, encoded/obfuscated data, or every novel secret format. They can also reject harmless content. Rephrase abstractly instead of assuming that successful validation proves safety.

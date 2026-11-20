@@ -79,6 +79,11 @@ import { recoveryHint, type RecoveryMode } from "./workflow/recovery.ts";
 import { SessionCoordinator } from "./state/sessionCoordinator.ts";
 import { SessionMetrics } from "./state/sessionMetrics.ts";
 import {
+  BalancedCheckpoints,
+  balancedReviewReminder,
+  type ReviewBlocker,
+} from "./workflow/balancedCheckpoints.ts";
+import {
   PlanningGate,
   enforcedPlanningPrompt,
 } from "./workflow/planningGate.ts";
@@ -288,6 +293,7 @@ interface ActiveSession {
   enforcePlanning?: boolean;
   checklist?: { items: ChecklistItem[]; revision: number };
   metrics: SessionMetrics;
+  checkpoints?: BalancedCheckpoints;
 }
 // These settings and task data are discarded at shutdown. Dispatch counts are
 // process-scoped per session key so resuming cannot reset the budget.
@@ -302,6 +308,11 @@ function activeSession(key: string): ActiveSession {
 }
 const consultationCounts = new Map<string, number>();
 const pendingConsultations = new Set<string>();
+function consultationBudgetExhausted(key: string): boolean {
+  const limit = config.maxConsultationsPerSession;
+  return limit !== undefined &&
+    (!Number.isInteger(limit) || limit < 1 || (consultationCounts.get(key) ?? 0) >= limit);
+}
 const lastQuotaBySession = new Map<
   string,
   { ts: number; report: GatewayUsageReport }
@@ -364,10 +375,48 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
   const recoveryKey = (ctx: { sessionManager: any }) =>
     sessions.recoveryKey(ctx);
   const recovery = (ctx: { sessionManager: any }) => sessions.recovery(ctx);
+  function recordCheckpoints(
+    key: string,
+    event: "started" | "review-reminder" | "settled",
+    tracking: BalancedCheckpoints,
+    blocker?: ReviewBlocker,
+  ): void {
+    const data = { event, ...tracking.snapshot(blocker) };
+    try {
+      if (typeof pi.appendEntry === "function") {
+        pi.appendEntry("omni-advisor.checkpoints.v1", data);
+        return;
+      }
+    } catch {
+      // The local debug log is also useful when the host cannot persist entries.
+    }
+    log(key, "BALANCED_CHECKPOINTS", JSON.stringify(data));
+  }
+  function startCheckpoints(key: string): void {
+    if (key === "unknown") return;
+    const mode = executionMode(key);
+    const tracking = new BalancedCheckpoints({
+      cloudEnabled: Boolean(isAdvisorEnabled(key)),
+      mode: mode === "balanced" || mode === "cloud-led" || mode === "local-led" ? mode : "unknown",
+      planningEnforced: planningEnforced(key),
+    });
+    activeSession(key).checkpoints = tracking;
+    recordCheckpoints(key, "started", tracking);
+  }
+  function reviewBlocker(key: string, ctx: { sessionManager: any }): ReviewBlocker | undefined {
+    if (executionMode(key) !== "balanced") return "different-workflow";
+    if (!isAdvisorEnabled(key)) return "cloud-off";
+    if (recovery(ctx).scope !== "active") return "user-scope";
+    if (consultationBudgetExhausted(key)) return "budget-exhausted";
+    if (pendingConsultations.has(key)) return "consultation-pending";
+    if (pi.getActiveTools && !pi.getActiveTools().includes("ask_advisor")) return "tool-inactive";
+  }
   const newRecoveryTask = (ctx: { sessionManager: any }) => {
     const key = sessionKey(ctx);
     recovery(ctx).newTask();
-    delete activeSession(key).checklist;
+    const state = activeSession(key);
+    delete state.checklist;
+    if (state.checkpoints && !state.checkpoints.settled) startCheckpoints(key);
     if (planningEnforced(key)) planningGate.begin(key);
   };
   const recoveryMode = (): RecoveryMode =>
@@ -385,6 +434,8 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     ctx: { sessionManager: any },
   ) => {
     sessions.restore(ctx);
+    const state = activeSessions.get(sessionKey(ctx));
+    if (state) delete state.checkpoints;
   };
   pi.on("session_start", restoreRecovery);
   pi.on("session_switch", restoreRecovery);
@@ -448,6 +499,16 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     }),
     async execute(_id, params, _signal, _onUpdate, ctx) {
       const key = sessionKey(ctx);
+      const purpose = params.purpose ?? "plan";
+      const state = activeSession(key);
+      const tracking = state.checkpoints;
+      const blocked = (message: string, status?: string) => {
+        tracking?.record(purpose, "blocked");
+        return {
+          content: [{ type: "text" as const, text: message }],
+          details: status ? { status } : {},
+        };
+      };
       // Pending recovery calls are linked even if the model omits the optional metadata.
       const recoveryEpisode =
         params.recoveryEpisode ??
@@ -458,59 +519,29 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       if (recoveryEpisode) {
         try {
           if (!recovery(ctx).advice(recoveryEpisode))
-            return {
-              content: [
-                {
-                  type: "text",
-                  text: "Advice was already requested for this recovery episode. Record a local decision or blocker.",
-                },
-              ],
-              details: { status: "recovery_advice_used" },
-            };
+            return blocked(
+              "Advice was already requested for this recovery episode. Record a local decision or blocker.",
+              "recovery_advice_used",
+            );
           recoverySessions.save(recoveryKey(ctx));
         } catch {
-          return {
-            content: [
-              {
-                type: "text",
-                text: "Unknown recovery episode. Use advisor_recovery to inspect current state.",
-              },
-            ],
-            details: {},
-          };
+          return blocked("Unknown recovery episode. Use advisor_recovery to inspect current state.");
         }
       }
-      const stats = activeSession(key).metrics;
+      const stats = state.metrics;
       if (key === "unknown" || !isAdvisorEnabled(key)) {
         stats.blocked++;
-        return {
-          content: [
-            {
-              type: "text",
-              text: "Cloud consultation blocked: enable /omni-advisor on and use an isolated session. Continue locally.",
-            },
-          ],
-          details: { status: "disabled" },
-        };
+        return blocked(
+          "Cloud consultation blocked: enable /omni-advisor on and use an isolated session. Continue locally.",
+          "disabled",
+        );
       }
-      const limit = config.maxConsultationsPerSession;
-      if (
-        (limit !== undefined &&
-          (!Number.isInteger(limit) ||
-            limit < 1 ||
-            (consultationCounts.get(key) ?? 0) >= limit)) ||
-        pendingConsultations.has(key)
-      ) {
+      if (consultationBudgetExhausted(key) || pendingConsultations.has(key)) {
         stats.blocked++;
-        return {
-          content: [
-            {
-              type: "text",
-              text: "Consultation budget exhausted or another consultation is pending. Continue with the local plan.",
-            },
-          ],
-          details: { status: "budget" },
-        };
+        return blocked(
+          "Consultation budget exhausted or another consultation is pending. Continue with the local plan.",
+          "budget",
+        );
       }
       const planningToken = planningGate.token(key);
       pendingConsultations.add(key);
@@ -532,7 +563,6 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
 
         const sel = advisorSelector();
         const mode = executionMode(key);
-        const purpose = params.purpose ?? "plan";
         consultationCounts.set(key, (consultationCounts.get(key) ?? 0) + 1);
         const safeFocus = focus ? cipher.mask(focus, key) : undefined;
         assertAbstract(masked, "outbound brief");
@@ -581,17 +611,10 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         log(key, "METRICS", JSON.stringify(stats.snapshot()));
         if (!result.ok) {
           log(key, "ERROR", `advisor dispatch failed: ${result.error}`);
-          return {
-            content: [
-              {
-                type: "text",
-                text: `Error: cloud advisor unavailable — ${result.error}`,
-              },
-            ],
-            details: {},
-          };
+          return blocked(`Error: cloud advisor unavailable — ${result.error}`);
         }
 
+        tracking?.record(purpose, "completed");
         planningGate.complete(key, planningToken);
         log(
           key,
@@ -622,18 +645,11 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       } catch (err) {
         stats.blocked++;
         log(key, "ERROR", "ask_advisor validation or execution failed");
-        return {
-          content: [
-            {
-              type: "text",
-              text:
-                err instanceof PrivacyError
-                  ? err.message
-                  : "Consultation blocked by local validation. Check advisor_status and brief fields.",
-            },
-          ],
-          details: {},
-        };
+        return blocked(
+          err instanceof PrivacyError
+            ? err.message
+            : "Consultation blocked by local validation. Check advisor_status and brief fields.",
+        );
       } finally {
         pendingConsultations.delete(key);
       }
@@ -776,6 +792,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     parameters: z.object({}),
     async execute(_id, _params, _signal, _onUpdate, ctx) {
       const key = sessionKey(ctx);
+      const state = activeSession(key);
       const selector = advisorSelector();
       const { provider, model } = splitSelector(selector);
       const explicit = config.providers?.[provider];
@@ -814,7 +831,8 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         privacyPolicy:
           "abstract-only (heuristic validation; confidential meaning is not provably detected)",
         cipherStorage: "memory-only",
-        measurements: activeSession(key).metrics.snapshot(),
+        measurements: state.metrics.snapshot(),
+        balancedCheckpoints: state.checkpoints?.snapshot(reviewBlocker(key, ctx)) ?? null,
       };
       return {
         content: [{ type: "text", text: JSON.stringify(status) }],
@@ -899,9 +917,16 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     const state = activeSession(key);
     state.metrics.begin();
     const enforced = planningEnforced(key);
-    if (sessions.beginsTask(ctx, event.reason)) {
+    // OMP prepares the stop-hook follow-up as a prompt even though it belongs
+    // to the task that just tried to settle.
+    const reviewContinuation =
+      state.checkpoints?.reviewReminderSent &&
+      !state.checkpoints.settled &&
+      event.prompt?.includes(balancedReviewReminder);
+    if (sessions.beginsTask(ctx, event.reason) && !reviewContinuation) {
       delete state.checklist;
       if (enforced) planningGate.begin(key);
+      startCheckpoints(key);
     }
     if (
       !isAdvisorEnabled(key) &&
@@ -1013,7 +1038,12 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
   });
   pi.on("tool_result", async (event, ctx) => {
     const key = sessionKey(ctx);
-    activeSession(key).metrics.toolEnd(event.toolCallId);
+    const state = activeSession(key);
+    state.metrics.toolEnd(event.toolCallId);
+    if (state.checkpoints && !state.checkpoints.settled &&
+        !event.isError && (event.toolName === "edit" || event.toolName === "write")) {
+      state.checkpoints.substantiveWork = true;
+    }
     if (recoveryMode() !== "disabled") {
       const episode = recovery(ctx).observe(
         event.toolCallId,
@@ -1035,11 +1065,29 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         };
     }
   });
-  pi.on("agent_end", async (_event, ctx) => {
+
+  pi.on("session_stop", (event, ctx) => {
+    const last = event.last_assistant_message;
+    if (event.signal?.aborted || last?.role !== "assistant" || last.stopReason !== "stop") return;
     const key = sessionKey(ctx);
-    const metrics = activeSession(key).metrics;
+    const tracking = activeSessions.get(key)?.checkpoints;
+    if (!tracking?.substantiveWork || reviewBlocker(key, ctx) || !tracking.markReviewReminder()) return;
+    recordCheckpoints(key, "review-reminder", tracking);
+    return {
+      continue: true,
+      additionalContext: balancedReviewReminder,
+    };
+  });
+
+  pi.on("agent_end", async (event, ctx) => {
+    const key = sessionKey(ctx);
+    const { metrics, checkpoints } = activeSession(key);
     metrics.end();
     log(key, "METRICS", JSON.stringify(metrics.snapshot()));
+    if (checkpoints && !checkpoints.settled && event.willContinue !== true) {
+      checkpoints.settled = true;
+      recordCheckpoints(key, "settled", checkpoints, reviewBlocker(key, ctx));
+    }
   });
 
   // ---------------------------------------------------------------------

@@ -28,6 +28,8 @@ If new evidence invalidates the plan or leaves a consequential choice open, the 
 
 Trivial tasks stay local. There is no required mid-task call if the original plan already settles the decision. Final-review gaps are addressed locally; another review needs materially new architectural evidence. Routine syntax, commands, debugging, and tests do not require cloud supervision.
 
+If OMP sees a successful edit or write and the turn reaches a normal stop without a review, Omni Advisor can give the local model one optional review reminder before the session settles. The reminder starts no cloud request itself. It respects the current workflow, cloud access, user scope, tool availability, consultation budget, and any review already attempted. Read-only work and changes made only through shell commands do not trigger this reminder. The local model can finish without a consultation if a review is unnecessary.
+
 ### Local-led
 
 The local model executes the initial plan and consults again for a material discrepancy, consequential uncertainty, or a stalled approach. This is the lighter option when the local executor handles independent work well.
