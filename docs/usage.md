@@ -53,7 +53,7 @@ Only one consultation per session can be pending. There is no count limit by def
 
 ### `advisor_status`
 
-Returns actual extension settings, configuration readiness, planning state, optional limit (`null` = unlimited), counts, and timing. Local only: no authentication refresh or network probe, and no credential values or endpoint URLs. Configuration presence does not establish connectivity. OMP's `cfg://advisor` is a separate feature.
+Returns actual extension settings, configuration readiness, planning state, optional limit (`null` = unlimited), counts, and timing. The `balancedCheckpoints` field shows the effective settings at the start of the tracked turn, consultation outcomes by purpose, and whether a review reminder was sent. After observed edits or writes in balanced mode, an outstanding plan or review can be due or blocked. The decision checkpoint is optional unless attempted. Local only: no authentication refresh or network probe, and no credential values or endpoint URLs. Configuration presence does not establish connectivity. OMP's `cfg://advisor` is a separate feature.
 
 ### `advisor_recovery`
 
