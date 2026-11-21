@@ -42,7 +42,7 @@ export async function openSettings(ui: MenuUI, get: () => SettingsState, actions
     if (!choice || choice === options.close) return;
     if (choice === options.access) actions.change({ enabled: !s.enabled });
     else if (choice === options.workflow) {
-      const mode = await ui.select('Workflow (cloud-led consults between work batches)', ['Balanced — plan, key decisions, final review (default)', 'Local-led — plan once, execute locally', 'Cloud-led — cloud decides next batch']);
+      const mode = await ui.select('Workflow (cloud-led approves one step at a time)', ['Balanced — plan, key decisions, final review (default)', 'Local-led — plan once, execute locally', 'Cloud-led — cloud decides next step']);
       if (mode) actions.change({ mode: mode.startsWith('Cloud-led') ? 'cloud-led' : mode.startsWith('Balanced') ? 'balanced' : 'local-led' });
     } else if (choice === options.enforcement) actions.change({ enforced: !s.enforced });
     else if (choice === options.source) {

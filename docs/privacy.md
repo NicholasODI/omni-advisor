@@ -37,6 +37,8 @@ Local `omni-advisor.checkpoints.v1` session entries record turn-start settings a
 
 Local `omni-advisor.consultations.v1` entries store consultation IDs, task IDs, purposes, observed evidence revisions, timestamps, and outcomes. No receipt contains a brief, advice, or replayable request. OMP may independently record the normal tool call and response in its transcript.
 
+Local `omni-advisor.cloud-step.v1` entries record step IDs, categories, receipt IDs, and reported status labels. The active approval is held in memory. Step IDs are local metadata and are excluded from the provider request. Only the validated abstract outcomes supplied in the consultation are sent.
+
 ## What these safeguards cannot prove
 
 Heuristics cannot reliably recognize confidential meaning in prose, unregistered identifiers, encoded/obfuscated data, or every novel secret format. They can also reject harmless content. Rephrase abstractly instead of assuming that successful validation proves safety.

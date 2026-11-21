@@ -35,7 +35,7 @@ const subcommands = {
   "settings": "Open interactive settings",
   "mode balanced": "Plan, consequential decisions, final abstract review (default)",
   "mode local-led": "Plan then execute locally",
-  "mode cloud-led": "Cloud selects bounded execution batches",
+  "mode cloud-led": "Cloud proposes one step at a time",
   "planning on": "Require abstract cloud planning before execution tools",
   "planning off": "Disable planning enforcement",
   "on": "Enable advisor nudge for this session",

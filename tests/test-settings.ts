@@ -53,10 +53,10 @@ try {
   assert.equal(saved.unrelated,'keep'); assert.equal(saved.maxConsultationsPerSession,undefined); assert.ok(saved.providers.old); assert.ok(saved.providers.router);
   writeFileSync(path,'invalid'); assert.throws(()=>saveSettings(path,{})); assert.equal(readFileSync(path,'utf8'),'invalid');
 } finally {rmSync(dir,{recursive:true,force:true});}
-assert.match(advisorBlock(undefined,'cloud-led'),/next meaningful execution batch/);
+assert.match(advisorBlock(undefined,'cloud-led'),/exactly one JSON object/);
 assert.match(executionInstructions('cloud-led'),/Acceptance criteria remain binding/);
 assert.equal(executionInstructions('local-led'),'');
-assert.match(toolResponseFrame('Plan','cloud-led'),/After this batch/);
+assert.match(toolResponseFrame('Plan','cloud-led'),/cloudStepId/);
 assert.doesNotMatch(advisorBlock(),/Cloud-led mode/);
 
 let recoveryMenu=0;

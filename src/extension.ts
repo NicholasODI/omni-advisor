@@ -80,6 +80,7 @@ import { SessionCoordinator } from "./state/sessionCoordinator.ts";
 import { SessionMetrics } from "./state/sessionMetrics.ts";
 import { CONSULTATION_ENTRY, ConsultationLedger } from "./state/consultationLedger.ts";
 import type { RecoverySessionSource } from "./state/recoverySession.ts";
+import { CloudLedWorkflow, cloudLedScopeAllows, parseCloudLedProposal } from "./workflow/cloudLed.ts";
 import {
   BalancedCheckpoints,
   balancedReviewReminder,
@@ -297,6 +298,7 @@ interface ActiveSession {
   metrics: SessionMetrics;
   checkpoints?: BalancedCheckpoints;
   consultations?: ConsultationLedger;
+  cloudLed?: CloudLedWorkflow;
 }
 // These settings and task data are discarded at shutdown. Dispatch counts are
 // process-scoped per session key so resuming cannot reset the budget.
@@ -308,6 +310,11 @@ function activeSession(key: string): ActiveSession {
     activeSessions.set(key, state);
   }
   return state;
+}
+function cloudLedWorkflow(key: string): CloudLedWorkflow | undefined {
+  if (executionMode(key) !== "cloud-led" || !isAdvisorEnabled(key)) return;
+  const state = activeSession(key);
+  return state.cloudLed ??= new CloudLedWorkflow();
 }
 const consultationCounts = new Map<string, number>();
 const pendingConsultations = new Set<string>();
@@ -385,7 +392,22 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
   function setAdvisorEnabled(key: string, enabled: boolean): void {
     gateOnBySession.set(key, enabled);
     if (enabled) ensureConfigTerms(key);
-    else advisorNotices.delete(key);
+    else {
+      advisorNotices.delete(key);
+      const state = activeSessions.get(key);
+      if (state) delete state.cloudLed;
+    }
+  }
+  function recordCloudStep(key: string, data: Record<string, unknown>): void {
+    try {
+      if (typeof pi.appendEntry === "function") {
+        pi.appendEntry("omni-advisor.cloud-step.v1", data);
+        return;
+      }
+    } catch {
+      // Record metadata in the debug log when the host cannot append it.
+    }
+    log(key, "CLOUD_STEP", JSON.stringify(data));
   }
   const sessions = new SessionCoordinator(
     sessionKey,
@@ -438,6 +460,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     recovery(ctx).newTask();
     const state = activeSession(key);
     delete state.checklist;
+    delete state.cloudLed;
     if (key !== "unknown") consultationLedger(key, ctx.sessionManager).beginTask();
     if (state.checkpoints && !state.checkpoints.settled) startCheckpoints(key);
     if (planningEnforced(key)) planningGate.begin(key);
@@ -462,6 +485,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     if (state) {
       delete state.checkpoints;
       delete state.consultations;
+      delete state.cloudLed;
     }
   };
   pi.on("session_start", restoreRecovery);
@@ -477,6 +501,9 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
     description:
       "Consult a generalist software architect for initial task planning (rough overview without local files/code), architecture, performance, concurrency, security, and unfamiliar-framework questions. Do NOT use for routine syntax or locally verifiable work—work solo ($0). Only abstract architecture, constraints, synthetic examples, and summarized outcomes are allowed. Never send source code, records, raw errors, logs, or proprietary business rules. Registered identifiers are masked as a secondary safeguard, sent to an isolated cloud advisor with no access to your files, tools, or conversation history, and advice retains placeholders. Call advisor_status for real extension settings; do not infer them from OMP cfg://advisor.",
     parameters: z.object({
+      cloudStepId: z.string().max(36).optional().describe(
+        "Local-only cloud-led step ID. Include it and abstract outcomes to close the step and request the next one.",
+      ),
       recoveryEpisode: z
         .string()
         .optional()
@@ -529,6 +556,8 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       const purpose = params.purpose ?? "plan";
       const state = activeSession(key);
       const tracking = state.checkpoints;
+      const mode = executionMode(key);
+      const workflow = cloudLedWorkflow(key);
       const blocked = (message: string, status?: string) => {
         tracking?.record(purpose, "blocked");
         return {
@@ -536,10 +565,15 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
           details: status ? { status } : {},
         };
       };
-      // Pending recovery calls are linked even if the model omits the optional metadata.
+      if (workflow) {
+        const reason = workflow.consultationBlock(params.cloudStepId, Array.isArray(params.outcomes) ? params.outcomes : []);
+        if (reason) return blocked(reason, "cloud-step-required");
+        if (recovery(ctx).scope === "paused") return blocked("The user's stop is in force.", "disabled");
+      }
+      // A cloud-led handoff is independent of recovery unless explicitly linked.
       const recoveryEpisode =
         params.recoveryEpisode ??
-        (recoveryMode() !== "disabled"
+        (!workflow && recoveryMode() !== "disabled"
           ? recovery(ctx).pendingEpisodeId()
           : undefined);
       // Reserve once before every gate so rejection/unavailability cannot create an escalation loop.
@@ -591,11 +625,18 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         );
 
         const sel = advisorSelector();
-        const mode = executionMode(key);
         const safeFocus = focus ? cipher.mask(focus, key) : undefined;
         assertAbstract(masked, "outbound brief");
         if (safeFocus) assertAbstract(safeFocus, "outbound focus");
         if (_signal?.aborted) return blocked("Consultation cancelled before dispatch.", "cancelled");
+        const reported = workflow?.report();
+        if (reported) {
+          recordCloudStep(key, {
+            event: "reported",
+            stepId: reported.id,
+            statuses: params.outcomes!.map((outcome) => outcome.status),
+          });
+        }
         // Persist intent before provider I/O. Receipt data never includes the brief.
         receipt = ledger.begin(purpose);
         consultationCounts.set(key, (consultationCounts.get(key) ?? 0) + 1);
@@ -649,7 +690,8 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         if (activeSessions.get(key)?.consultations !== ledger ||
             (selectedSession !== undefined && selectedSession !== key) ||
             sessionKey(ctx) !== key || !ledger.isCurrent(receipt) ||
-            !isAdvisorEnabled(key) || recovery(ctx).scope === "paused") {
+            !isAdvisorEnabled(key) || recovery(ctx).scope === "paused" ||
+            (workflow && state.cloudLed !== workflow) || executionMode(key) !== mode) {
           ledger.finish(receipt, "stale");
           tracking?.record(purpose, "stale");
           return {
@@ -663,6 +705,20 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
           return blocked(`Error: cloud advisor unavailable — ${result.error}`);
         }
 
+        const proposal = workflow ? parseCloudLedProposal(result.text!) : undefined;
+        if (workflow && (!proposal || !cloudLedScopeAllows(proposal.kind, recovery(ctx).scope))) {
+          ledger.finish(receipt, "failed");
+          return blocked(
+            proposal
+              ? "The proposed cloud-led step is outside the user's current scope."
+              : "The advisor did not return a valid single cloud-led step. No execution step was approved.",
+            "cloud-step-rejected",
+          );
+        }
+        const step = workflow && proposal ? workflow.approve(proposal) : undefined;
+        if (step) {
+          recordCloudStep(key, { event: "approved", stepId: step.id, kind: step.kind, receiptId: receipt.id });
+        }
         ledger.finish(receipt, "completed");
         tracking?.record(purpose, "completed");
         planningGate.complete(key, planningToken);
@@ -686,10 +742,10 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
           content: [
             {
               type: "text",
-              text: toolResponseFrame(advice, mode, purpose),
+                text: toolResponseFrame(step ? JSON.stringify(step) : advice, mode, purpose),
             },
           ],
-          details: { advisor: sel, receiptId: receipt.id },
+          details: { advisor: sel, receiptId: receipt.id, ...(step ? { cloudStep: { ...step } } : {}) },
         };
       } catch (err) {
         if (receipt) ledger.finish(receipt, _signal?.aborted ? "cancelled" : "failed");
@@ -884,6 +940,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         measurements: state.metrics.snapshot(),
         balancedCheckpoints: state.checkpoints?.snapshot(reviewBlocker(key, ctx)) ?? null,
         consultationReceipts: key === "unknown" ? null : consultationLedger(key, ctx.sessionManager).snapshot(),
+        cloudLed: cloudLedWorkflow(key)?.snapshot() ?? null,
       };
       return {
         content: [{ type: "text", text: JSON.stringify(status) }],
@@ -977,6 +1034,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       event.prompt?.includes(balancedReviewReminder);
     if (sessions.beginsTask(ctx, event.reason) && !reviewContinuation) {
       delete state.checklist;
+      delete state.cloudLed;
       if (enforced) planningGate.begin(key);
       if (key !== "unknown") consultationLedger(key, ctx.sessionManager).beginTask();
       startCheckpoints(key);
@@ -1061,11 +1119,15 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
 
   pi.on("tool_call", async (event, ctx) => {
     const key = sessionKey(ctx);
-    const restricted = recovery(ctx).scopeRestriction(
+    const controller = recovery(ctx);
+    const restricted = controller.scopeRestriction(
       event.toolName,
       event.input ?? {},
     );
     if (restricted) return { block: true, reason: restricted };
+    const workflow = cloudLedWorkflow(key);
+    const stepBlock = workflow?.toolBlock(event.toolName, controller.scope, event.input ?? {});
+    if (stepBlock) return { block: true, reason: stepBlock };
     if (planningEnforced(key) && planningGate.blocked(key, event.toolName)) {
       return {
         block: true,
@@ -1074,7 +1136,7 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
       };
     }
     if (recoveryMode() !== "disabled") {
-      const blocked = recovery(ctx).start(
+      const blocked = controller.start(
         event.toolCallId,
         event.toolName,
         event.input ?? {},
@@ -1087,12 +1149,17 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
           reason: `Repeated operation requires a recovery decision (episode ${blocked}). ${recoveryHint}`,
         };
     }
+    workflow?.toolStarted(event.toolName, event.toolCallId);
     activeSession(key).metrics.toolStart(event.toolCallId);
   });
   pi.on("tool_result", async (event, ctx) => {
     const key = sessionKey(ctx);
     const state = activeSession(key);
     state.metrics.toolEnd(event.toolCallId);
+    state.cloudLed?.toolFinished(
+      event.toolCallId,
+      event.toolName === "bash" && event.details?.async?.state === "running",
+    );
     if (!event.isError && (event.toolName === "edit" || event.toolName === "write")) {
       if (key !== "unknown") consultationLedger(key, ctx.sessionManager).observeEdit();
       state.checkpoints?.observeEdit();
@@ -1253,7 +1320,11 @@ export default function omniAdvisor(pi: ExtensionAPI): void {
         if (patch.recoveryMode) config.recoveryMode = patch.recoveryMode;
         if (patch.recoveryThreshold !== undefined)
           config.recoveryThreshold = patch.recoveryThreshold;
-        if (patch.mode) activeSession(key).mode = patch.mode;
+        if (patch.mode && patch.mode !== executionMode(key)) {
+          const state = activeSession(key);
+          state.mode = patch.mode;
+          delete state.cloudLed;
+        }
         if (patch.source) sourceOverride = patch.source;
         if (patch.model) advisorModelOverride = patch.model;
         if ("limit" in patch) config.maxConsultationsPerSession = patch.limit;

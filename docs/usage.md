@@ -38,6 +38,7 @@ The local model constructs the brief and chooses when to call. Enabling a workfl
 | `objective` | Required; 3000 characters |
 | `questions` | Required; 3000 characters |
 | `purpose` | `plan` (default), `decision`, `checkpoint`, `review` |
+| `cloudStepId` | Local-only ID of the active or last reported cloud-led step, required with `outcomes` when requesting a follow-up step |
 | `stack` | Public stack/versions; 1000 characters |
 | `components` | Abstract roles/relationships; 2000 characters |
 | `constraints` | 2000 characters |
@@ -58,6 +59,8 @@ Returns actual extension settings, configuration readiness, planning state, opti
 `consultationReceipts` shows up to 12 recent attempts for the active session branch. Each receipt records the task, purpose, observed edit revision, timestamps, and outcome. A pending receipt restored after an interruption has outcome `unknown`, so assume it may have been billed when deciding whether to consult again. Receipts never trigger an automatic retry. `persistence` indicates whether the latest state was saved to an OMP session entry or is held in memory.
 
 Receipt freshness distinguishes the current task and evidence from older tasks and changed evidence. A late response for old work is withheld. A completed balanced review becomes stale after another successful edit or write through OMP. Changes made through shell commands or outside OMP cannot be detected.
+
+In cloud-led mode, `cloudLed` shows the active proposal, its local ID, whether tools are still pending, and the reported step ID needed to retry a failed handoff.
 
 ### `advisor_recovery`
 
